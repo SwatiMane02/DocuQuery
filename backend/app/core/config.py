@@ -49,7 +49,7 @@ class Settings(BaseSettings):
 
     # CORS configuration - comma-separated list of allowed origins
     CORS_ORIGINS: str = Field(
-        default="http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1:5173,http://127.0.0.1:3000,http://127.0.0.1:8080",
+        default="https://docu-query-theta.vercel.app,http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1:5173,http://127.0.0.1:3000,http://127.0.0.1:8080",
         description="Allowed CORS origins (comma-separated string)"
     )
     
@@ -186,15 +186,47 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         """
-        Parse CORS_ORIGINS into a clean list of allowed origin strings.
+        Parse CORS_ORIGINS into a clean, normalized list of allowed origin strings.
         Supports comma-separated strings or pre-configured lists.
+        Enforces security and production best practices:
+        - Strips whitespace and trailing slashes from each origin URL
+        - Prevents wildcard '*' when credentials are enabled or in production
+        - Preserves and supports production Vercel frontend and localhost origins
         """
+        is_prod = self.ENVIRONMENT.lower() == "production" or (not self.DEBUG and self.ENVIRONMENT.lower() != "development")
+
         if not self.CORS_ORIGINS:
-            return ["*"] if self.DEBUG else []
-        if isinstance(self.CORS_ORIGINS, list):
-            return self.CORS_ORIGINS
-        # Split by comma, strip whitespace, remove empty items
-        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+            if is_prod:
+                return ["https://docu-query-theta.vercel.app"]
+            return [
+                "https://docu-query-theta.vercel.app",
+                "http://localhost:5173",
+                "http://localhost:3000",
+                "http://127.0.0.1:5173",
+            ]
+
+        raw_items = self.CORS_ORIGINS if isinstance(self.CORS_ORIGINS, list) else self.CORS_ORIGINS.split(",")
+
+        parsed: list[str] = []
+        for item in raw_items:
+            origin = str(item).strip().rstrip("/")
+            if not origin:
+                continue
+            # Wildcard '*' is disallowed in production or with credentials per W3C CORS specification
+            if origin == "*":
+                if is_prod or not self.DEBUG:
+                    continue
+            if origin not in parsed:
+                parsed.append(origin)
+
+        # Fallback if list is empty after filtering
+        if not parsed:
+            if is_prod:
+                parsed = ["https://docu-query-theta.vercel.app"]
+            else:
+                parsed = ["http://localhost:5173", "http://localhost:3000"]
+
+        return parsed
 
     def validate_production_config(self) -> None:
         """
