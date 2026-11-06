@@ -1,18 +1,13 @@
 import React, { useState } from "react";
 import { Link, useRouter, useSearch } from "@tanstack/react-router";
 import {
-  Leaf,
   User,
   Mail,
   Lock,
   Loader2,
   Eye,
   EyeOff,
-  ArrowRight,
 } from "lucide-react";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { AuthService } from "@/services/authService";
 import { toast } from "sonner";
 
@@ -90,44 +85,253 @@ export function SignupPage() {
   };
 
   return (
-    <div className="flex min-h-[85vh] items-center justify-center px-4 py-12 sm:px-6 lg:px-8">
-      <div className="w-full max-w-md space-y-8 animate-fade-in">
-        {/* Logo/Header */}
-        <div className="text-center">
-          <Link to="/" className="inline-flex items-center gap-2 group">
-            <div className="grid h-10 w-10 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm transition-all duration-300 group-hover:scale-105">
-              <Leaf className="h-5 w-5" />
-            </div>
-            <span className="font-serif text-2xl font-semibold tracking-tight text-foreground">
-              DocuQuery
-            </span>
-          </Link>
-          <h2 className="mt-6 text-3xl font-bold tracking-tight text-foreground">
-            Create your account
-          </h2>
-          <p className="mt-2 text-sm text-muted-foreground">
-            Start querying your documents with AI today
-          </p>
+    <div
+      style={{
+        minHeight: "100vh",
+        backgroundColor: "#0A0C0E",
+        color: "#EDE7DC",
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "48px 16px",
+        position: "relative",
+        boxSizing: "border-box",
+        fontFamily: "'Sora', -apple-system, BlinkMacSystemFont, sans-serif",
+      }}
+    >
+      {/* Background center vertical hairline */}
+      <div
+        style={{
+          position: "absolute",
+          top: 0,
+          bottom: 0,
+          left: "50%",
+          width: "1px",
+          backgroundColor: "rgba(237, 231, 220, 0.05)",
+          transform: "translateX(-50%)",
+          pointerEvents: "none",
+          zIndex: 0,
+        }}
+      />
+
+      {/* Top amber vertical tick */}
+      <div
+        style={{
+          position: "absolute",
+          top: "82px",
+          left: "50%",
+          width: "2px",
+          height: "20px",
+          backgroundColor: "#E8913C",
+          transform: "translateX(-50%)",
+          pointerEvents: "none",
+          zIndex: 1,
+        }}
+      />
+
+      {/* Top bar: Left Home link */}
+      <div style={{ position: "absolute", top: "28px", left: "32px", zIndex: 10 }}>
+        <Link
+          to="/"
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            gap: "8px",
+            fontSize: "11px",
+            fontFamily: "monospace",
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            color: "#EDE7DC",
+            textDecoration: "none",
+          }}
+        >
+          <span style={{ color: "#E8913C", fontSize: "14px", fontWeight: "bold" }}>←</span>
+          <span>HOME</span>
+        </Link>
+      </div>
+
+      {/* Top bar: Right Auth tag */}
+      <div
+        style={{
+          position: "absolute",
+          top: "28px",
+          right: "32px",
+          zIndex: 10,
+          display: "flex",
+          alignItems: "center",
+          gap: "8px",
+        }}
+      >
+        <span
+          style={{
+            width: "6px",
+            height: "6px",
+            borderRadius: "50%",
+            backgroundColor: "#2E6B72",
+            display: "inline-block",
+          }}
+        />
+        <span
+          style={{
+            fontSize: "11px",
+            fontFamily: "monospace",
+            letterSpacing: "0.14em",
+            textTransform: "uppercase",
+            color: "#8E9598",
+          }}
+        >
+          DOCUQUERY // REGISTER
+        </span>
+      </div>
+
+      {/* Center content container */}
+      <div
+        style={{
+          width: "100%",
+          maxWidth: "460px",
+          position: "relative",
+          zIndex: 2,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+        }}
+      >
+        {/* Logo Wordmark */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            gap: "8px",
+            marginBottom: "6px",
+          }}
+        >
+          <span
+            style={{
+              fontFamily: "'Syne', sans-serif",
+              fontSize: "26px",
+              fontWeight: 800,
+              letterSpacing: "-0.01em",
+              color: "#EDE7DC",
+              textTransform: "uppercase",
+            }}
+          >
+            DOCUQUERY
+          </span>
+          <span
+            style={{
+              width: "6px",
+              height: "6px",
+              borderRadius: "50%",
+              backgroundColor: "#E8913C",
+              display: "inline-block",
+            }}
+          />
         </div>
 
-        {/* Card */}
-        <div className="bg-card border border-border rounded-2xl shadow-soft p-8">
-          <form className="space-y-5" onSubmit={handleSubmit}>
-            {/* Error Alert */}
-            {error && (
-              <div className="rounded-lg bg-destructive/10 border border-destructive/20 p-4 text-sm text-destructive animate-slide-up">
-                {error}
-              </div>
-            )}
+        {/* Heading */}
+        <h1
+          style={{
+            fontFamily: "'Syne', sans-serif",
+            fontSize: "36px",
+            fontWeight: 700,
+            letterSpacing: "-0.02em",
+            color: "#EDE7DC",
+            margin: "0 0 6px 0",
+            textAlign: "center",
+          }}
+        >
+          Create account
+        </h1>
 
-            {/* Name Input */}
-            <div className="space-y-2">
-              <Label htmlFor="name" className="text-foreground font-medium">
-                Full Name
-              </Label>
-              <div className="relative">
-                <User className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
+        {/* Subtitle */}
+        <p
+          style={{
+            fontSize: "13.5px",
+            color: "#8E9598",
+            margin: "0 0 28px 0",
+            textAlign: "center",
+          }}
+        >
+          Start querying your documents with AI today
+        </p>
+
+        {/* Card Box */}
+        <div
+          style={{
+            width: "100%",
+            backgroundColor: "#101317",
+            border: "1px solid rgba(237, 231, 220, 0.12)",
+            borderRadius: "14px",
+            padding: "32px 30px",
+            boxSizing: "border-box",
+            boxShadow: "0 20px 50px rgba(0, 0, 0, 0.6)",
+          }}
+        >
+          {error && (
+            <div
+              role="alert"
+              style={{
+                marginBottom: "20px",
+                borderRadius: "8px",
+                backgroundColor: "rgba(232, 145, 60, 0.1)",
+                border: "1px solid rgba(232, 145, 60, 0.35)",
+                padding: "12px 14px",
+                fontSize: "12px",
+                color: "#EDE7DC",
+                display: "flex",
+                alignItems: "center",
+                gap: "8px",
+              }}
+            >
+              <span style={{ color: "#E8913C", fontWeight: "bold" }}>!</span>
+              <span>{error}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleSubmit} noValidate style={{ width: "100%" }}>
+            {/* FULL NAME */}
+            <div style={{ marginBottom: "18px" }}>
+              <label
+                htmlFor="name"
+                style={{
+                  display: "block",
+                  fontSize: "10.5px",
+                  fontFamily: "monospace",
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  color: "#EDE7DC",
+                  marginBottom: "8px",
+                  fontWeight: 600,
+                }}
+              >
+                FULL NAME
+              </label>
+              <div
+                style={{
+                  position: "relative",
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "14px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    pointerEvents: "none",
+                    color: "#8E9598",
+                  }}
+                >
+                  <User size={16} strokeWidth={1.75} />
+                </div>
+                <input
                   id="name"
                   name="name"
                   type="text"
@@ -136,19 +340,72 @@ export function SignupPage() {
                   onChange={(e) => setName(e.target.value)}
                   disabled={isLoading}
                   placeholder="John Doe"
-                  className="pl-10 h-11 rounded-lg border-border bg-muted/20 transition-all duration-200 focus-visible:ring-2 focus-visible:ring-primary focus-visible:border-primary focus-visible:bg-card"
+                  style={{
+                    width: "100%",
+                    height: "46px",
+                    backgroundColor: "#0D0F12",
+                    border: "1px solid rgba(237, 231, 220, 0.15)",
+                    borderRadius: "8px",
+                    paddingLeft: "44px",
+                    paddingRight: "14px",
+                    color: "#EDE7DC",
+                    fontSize: "13.5px",
+                    fontFamily: "inherit",
+                    outline: "none",
+                    boxSizing: "border-box",
+                    transition: "border-color 0.2s ease",
+                  }}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = "#E8913C";
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(237, 231, 220, 0.15)";
+                  }}
                 />
               </div>
             </div>
 
-            {/* Email Input */}
-            <div className="space-y-2">
-              <Label htmlFor="email" className="text-foreground font-medium">
-                Email Address
-              </Label>
-              <div className="relative">
-                <Mail className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
+            {/* EMAIL ADDRESS */}
+            <div style={{ marginBottom: "18px" }}>
+              <label
+                htmlFor="email"
+                style={{
+                  display: "block",
+                  fontSize: "10.5px",
+                  fontFamily: "monospace",
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  color: "#EDE7DC",
+                  marginBottom: "8px",
+                  fontWeight: 600,
+                }}
+              >
+                EMAIL ADDRESS
+              </label>
+              <div
+                style={{
+                  position: "relative",
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "14px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    pointerEvents: "none",
+                    color: "#8E9598",
+                  }}
+                >
+                  <Mail size={16} strokeWidth={1.75} />
+                </div>
+                <input
                   id="email"
                   name="email"
                   type="email"
@@ -157,19 +414,72 @@ export function SignupPage() {
                   onChange={(e) => setEmail(e.target.value)}
                   disabled={isLoading}
                   placeholder="name@example.com"
-                  className="pl-10 h-11 rounded-lg border-border bg-muted/20 transition-all duration-200 focus-visible:ring-2 focus-visible:ring-primary focus-visible:border-primary focus-visible:bg-card"
+                  style={{
+                    width: "100%",
+                    height: "46px",
+                    backgroundColor: "#0D0F12",
+                    border: "1px solid rgba(237, 231, 220, 0.15)",
+                    borderRadius: "8px",
+                    paddingLeft: "44px",
+                    paddingRight: "14px",
+                    color: "#EDE7DC",
+                    fontSize: "13.5px",
+                    fontFamily: "inherit",
+                    outline: "none",
+                    boxSizing: "border-box",
+                    transition: "border-color 0.2s ease",
+                  }}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = "#E8913C";
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(237, 231, 220, 0.15)";
+                  }}
                 />
               </div>
             </div>
 
-            {/* Password Input */}
-            <div className="space-y-2">
-              <Label htmlFor="password" className="text-foreground font-medium">
-                Password
-              </Label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
+            {/* PASSWORD */}
+            <div style={{ marginBottom: "18px" }}>
+              <label
+                htmlFor="password"
+                style={{
+                  display: "block",
+                  fontSize: "10.5px",
+                  fontFamily: "monospace",
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  color: "#EDE7DC",
+                  marginBottom: "8px",
+                  fontWeight: 600,
+                }}
+              >
+                PASSWORD
+              </label>
+              <div
+                style={{
+                  position: "relative",
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "14px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    pointerEvents: "none",
+                    color: "#8E9598",
+                  }}
+                >
+                  <Lock size={16} strokeWidth={1.75} />
+                </div>
+                <input
                   id="password"
                   name="password"
                   type={showPassword ? "text" : "password"}
@@ -177,34 +487,94 @@ export function SignupPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   disabled={isLoading}
-                  placeholder="•••••••• (min 8 characters)"
-                  className="pl-10 pr-10 h-11 rounded-lg border-border bg-muted/20 transition-all duration-200 focus-visible:ring-2 focus-visible:ring-primary focus-visible:border-primary focus-visible:bg-card"
+                  placeholder="At least 8 characters"
+                  style={{
+                    width: "100%",
+                    height: "46px",
+                    backgroundColor: "#0D0F12",
+                    border: "1px solid rgba(237, 231, 220, 0.15)",
+                    borderRadius: "8px",
+                    paddingLeft: "44px",
+                    paddingRight: "44px",
+                    color: "#EDE7DC",
+                    fontSize: "13.5px",
+                    fontFamily: "inherit",
+                    outline: "none",
+                    boxSizing: "border-box",
+                    transition: "border-color 0.2s ease",
+                  }}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = "#E8913C";
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(237, 231, 220, 0.15)";
+                  }}
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                  style={{
+                    position: "absolute",
+                    right: "14px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    background: "none",
+                    border: "none",
+                    color: "#8E9598",
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: 0,
+                  }}
+                  aria-label={showPassword ? "Hide password" : "Show password"}
                 >
-                  {showPassword ? (
-                    <EyeOff className="h-4 w-4" />
-                  ) : (
-                    <Eye className="h-4 w-4" />
-                  )}
+                  {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                 </button>
               </div>
             </div>
 
-            {/* Confirm Password Input */}
-            <div className="space-y-2">
-              <Label
+            {/* CONFIRM PASSWORD */}
+            <div style={{ marginBottom: "26px" }}>
+              <label
                 htmlFor="confirmPassword"
-                className="text-foreground font-medium"
+                style={{
+                  display: "block",
+                  fontSize: "10.5px",
+                  fontFamily: "monospace",
+                  letterSpacing: "0.14em",
+                  textTransform: "uppercase",
+                  color: "#EDE7DC",
+                  marginBottom: "8px",
+                  fontWeight: 600,
+                }}
               >
-                Confirm Password
-              </Label>
-              <div className="relative">
-                <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <Input
+                CONFIRM PASSWORD
+              </label>
+              <div
+                style={{
+                  position: "relative",
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                }}
+              >
+                <div
+                  style={{
+                    position: "absolute",
+                    left: "14px",
+                    top: "50%",
+                    transform: "translateY(-50%)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    pointerEvents: "none",
+                    color: "#8E9598",
+                  }}
+                >
+                  <Lock size={16} strokeWidth={1.75} />
+                </div>
+                <input
                   id="confirmPassword"
                   name="confirmPassword"
                   type={showPassword ? "text" : "password"}
@@ -212,44 +582,116 @@ export function SignupPage() {
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   disabled={isLoading}
-                  placeholder="••••••••"
-                  className="pl-10 h-11 rounded-lg border-border bg-muted/20 transition-all duration-200 focus-visible:ring-2 focus-visible:ring-primary focus-visible:border-primary focus-visible:bg-card"
+                  placeholder="Re-enter your password"
+                  style={{
+                    width: "100%",
+                    height: "46px",
+                    backgroundColor: "#0D0F12",
+                    border: "1px solid rgba(237, 231, 220, 0.15)",
+                    borderRadius: "8px",
+                    paddingLeft: "44px",
+                    paddingRight: "14px",
+                    color: "#EDE7DC",
+                    fontSize: "13.5px",
+                    fontFamily: "inherit",
+                    outline: "none",
+                    boxSizing: "border-box",
+                    transition: "border-color 0.2s ease",
+                  }}
+                  onFocus={(e) => {
+                    e.currentTarget.style.borderColor = "#E8913C";
+                  }}
+                  onBlur={(e) => {
+                    e.currentTarget.style.borderColor = "rgba(237, 231, 220, 0.15)";
+                  }}
                 />
               </div>
             </div>
 
-            {/* Submit button */}
-            <Button
+            {/* CREATE ACCOUNT BUTTON */}
+            <button
               type="submit"
               disabled={isLoading}
-              className="w-full h-11 rounded-lg bg-primary hover:bg-primary/90 text-primary-foreground font-medium shadow-sm transition-all duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center"
+              style={{
+                width: "100%",
+                height: "46px",
+                backgroundColor: "#E8913C",
+                color: "#0A0C0E",
+                border: "none",
+                borderRadius: "8px",
+                fontSize: "12px",
+                fontWeight: 700,
+                letterSpacing: "0.14em",
+                textTransform: "uppercase",
+                cursor: isLoading ? "not-allowed" : "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "8px",
+                boxSizing: "border-box",
+                transition: "opacity 0.2s ease, filter 0.2s ease",
+                opacity: isLoading ? 0.7 : 1,
+              }}
+              onMouseEnter={(e) => {
+                if (!isLoading) e.currentTarget.style.filter = "brightness(1.06)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.filter = "none";
+              }}
             >
               {isLoading ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Creating account...
+                  <Loader2 size={16} className="animate-spin" color="#0A0C0E" />
+                  <span>CREATING ACCOUNT...</span>
                 </>
               ) : (
                 <>
-                  Sign Up <ArrowRight className="ml-2 h-4 w-4" />
+                  <span>CREATE ACCOUNT</span>
+                  <span style={{ fontSize: "15px", fontWeight: "bold" }}>→</span>
                 </>
               )}
-            </Button>
+            </button>
           </form>
         </div>
 
-        {/* Footer Link */}
-        <p className="text-center text-sm text-muted-foreground">
-          Already have an account?{" "}
+        {/* Footer / Log In Link */}
+        <div
+          style={{
+            marginTop: "28px",
+            textAlign: "center",
+            fontSize: "13px",
+            color: "#8E9598",
+          }}
+        >
+          <span>Already have an account? </span>
           <Link
             to="/login"
             search={search}
-            className="font-semibold text-primary hover:text-primary/80 transition-colors"
+            style={{
+              color: "#E8913C",
+              textDecoration: "none",
+              fontWeight: 500,
+            }}
           >
             Log in
           </Link>
-        </p>
+        </div>
       </div>
+
+      {/* Bottom amber vertical tick */}
+      <div
+        style={{
+          position: "absolute",
+          bottom: "32px",
+          left: "50%",
+          width: "2px",
+          height: "20px",
+          backgroundColor: "#E8913C",
+          transform: "translateX(-50%)",
+          pointerEvents: "none",
+          zIndex: 1,
+        }}
+      />
     </div>
   );
 }
