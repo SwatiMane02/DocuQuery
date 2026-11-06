@@ -20,8 +20,12 @@ multipart/form-data encoding:
 - Client uses: FormData in JavaScript, requests.files in Python, etc.
 """
 
+from typing import Any
+import logging
+import httpx
+
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from app.api.auth import get_current_user
 from app.models.user import User
@@ -38,15 +42,30 @@ from app.schemas.document import (
     ChatResponse,
     ChatSourceMetadata,
 )
+from app.core.config import settings
 from app.services.document_service import document_service
 from app.services.embedding_service import embedding_service
 from app.services.retrieval_service import retrieval_service
 from app.services.llm_service import llm_service
+from app.services.llm_provider_factory import get_llm_provider
+from app.services.cache_service import chat_cache, build_cache_key
+from app.services.rate_limiter import chat_rate_limiter
+from app.services.metrics_service import llm_metrics
+from app.services.llm_errors import (
+    LLMAuthError,
+    LLMModelNotFoundError,
+    LLMQuotaExceededError,
+    LLMRateLimitError,
+    LLMTimeoutError,
+    LLMUnavailableError,
+)
 
 
 # ============================================================================
 # ROUTER SETUP
 # ============================================================================
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(
     prefix="/documents",
@@ -253,6 +272,104 @@ async def list_documents(
         total=total,
         skip=skip,
         limit=limit,
+    )
+
+
+@router.get(
+    "/{document_id}",
+    response_model=DocumentResponse,
+    summary="Get single document by ID"
+)
+async def get_document_by_id(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+) -> DocumentResponse:
+    """
+    Get a single document by ID for the current authenticated user.
+    """
+    doc = await document_service.get_document(
+        document_id=document_id,
+        user_id=str(current_user.id),
+    )
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found or you don't have permission to access it"
+        )
+    return DocumentResponse(
+        id=str(doc.id),
+        filename=doc.filename,
+        file_type=doc.file_type,
+        file_size=doc.file_size,
+        upload_date=doc.upload_date,
+        status=doc.status,
+    )
+
+
+@router.get(
+    "/{document_id}/download",
+    summary="Download original uploaded file"
+)
+async def download_document(
+    document_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Stream the original document file for download.
+    Preserves strict ownership authentication, retrieving the document
+    from Cloudinary (or local filesystem for backward compatibility).
+    """
+    doc = await document_service.get_document(
+        document_id=document_id,
+        user_id=str(current_user.id),
+    )
+    if not doc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document not found or you don't have permission to download it"
+        )
+
+    # 1. If stored in Cloudinary, securely stream content to client
+    if doc.secure_url:
+        try:
+            client = httpx.AsyncClient(timeout=60.0)
+            req = client.build_request("GET", doc.secure_url)
+            res = await client.send(req, stream=True)
+            if res.status_code == 200:
+                async def stream_generator():
+                    try:
+                        async for chunk in res.aiter_bytes():
+                            yield chunk
+                    finally:
+                        await res.aclose()
+                        await client.aclose()
+
+                return StreamingResponse(
+                    stream_generator(),
+                    media_type=doc.file_type or "application/octet-stream",
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{doc.filename}"'
+                    }
+                )
+            else:
+                await res.aclose()
+                await client.aclose()
+                logger.error(f"Cloudinary download returned status {res.status_code} for document {document_id}")
+        except Exception as e:
+            logger.error(f"Error streaming document from Cloudinary: {str(e)}")
+
+    # 2. Backward compatibility fallback to local filesystem
+    file_path = document_service.get_document_path(document_id, str(current_user.id), doc.filename)
+    if file_path and file_path.exists():
+        return FileResponse(
+            path=str(file_path),
+            filename=doc.filename,
+            media_type=doc.file_type,
+        )
+
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail="File not found on server or storage"
     )
 
 
@@ -608,7 +725,7 @@ async def semantic_search(
 async def chat(
     chat_request: ChatRequest,
     current_user: User = Depends(get_current_user),
-    top_k: int = 10,
+    top_k: int = settings.TOP_K_RESULTS,
 ) -> ChatResponse:
     """
     Complete RAG pipeline chat endpoint.
@@ -616,28 +733,30 @@ async def chat(
     Answers user questions using document context through:
     1. Semantic retrieval - Find relevant document chunks
     2. Prompt building - Create context-aware prompt
-    3. LLM generation - Generate answer using local Ollama model
+    3. LLM generation - Generate answer using the Gemini model
     4. Source tracking - Return which chunks were used
-    
+
     The RAG Pipeline:
     User Query → Query Embedding → Similarity Search → Top Chunks →
     Prompt Building → LLM Generation → AI Answer
-    
+
     This completes the full RAG stack:
     - MongoDB for document storage
     - Embeddings for semantic understanding
     - Cosine similarity for chunk retrieval
-    - Ollama LLM for answer generation
-    
+    - Gemini LLM for answer generation
+
     Error Handling:
     - 400: Empty query or invalid parameters
-    - 401: Invalid/missing token
+    - 401: Invalid/missing token, or Gemini API key invalid
     - 422: Invalid request schema
-    - 503: Ollama API unreachable (LLM not running)
+    - 429: Gemini quota exceeded or rate-limited
+    - 503: Gemini API unavailable / model not found
+    - 504: Gemini API timeout
     - 500: Other processing errors
-    
+
     Requirements:
-    - Ollama must be running locally: ollama run mistral
+    - GEMINI_API_KEY must be configured in .env
     - User must have uploaded documents with embeddings
     
     Request:
@@ -680,52 +799,154 @@ async def chat(
         
     Raises:
         HTTPException 400: Empty query or invalid parameters
-        HTTPException 503: Ollama API unreachable
-        HTTPException 500: LLM generation failed
+        HTTPException 401: Gemini API key invalid
+        HTTPException 429: Gemini quota exceeded or rate-limited
+        HTTPException 503: Gemini API unavailable / model not found
+        HTTPException 504: Gemini API timeout
+        HTTPException 500: Other processing errors
     """
+    import asyncio
     import logging
+    import time
     from app.db.database import get_database
-    
+
     logger = logging.getLogger(__name__)
-    
+
     # Validate top_k parameter
     if top_k < 1 or top_k > 20:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="top_k must be between 1 and 20"
         )
-    
+
+    user_id = str(current_user.id)
+
+    # Rate limit - protects the Gemini API from a single user hammering it.
+    if not chat_rate_limiter.allow(user_id):
+        llm_metrics.increment("rate_limited")
+        retry_after = chat_rate_limiter.retry_after_seconds(user_id)
+        logger.warning(f"⏳ Rate limit exceeded: user={current_user.email}, retry_after={retry_after}s")
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded ({settings.RATE_LIMIT_PER_MINUTE}/min). Try again in {retry_after}s.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    request_start = time.monotonic()
+    cache_key = build_cache_key(
+        user_id=user_id,
+        document_id=chat_request.document_id,
+        question=chat_request.query,
+    )
+
+    def _log_line(event: str, **fields: Any) -> None:
+        parts = ", ".join(f"{k}={v}" for k, v in fields.items())
+        logger.info(f"{event}: user_id={user_id}, document_id={chat_request.document_id}, {parts}")
+
+    # Exact cache check - identical (user, document, question) within the
+    # TTL window skips retrieval + the Gemini call entirely.
+    cached_response = chat_cache.get(cache_key)
+    if cached_response is not None:
+        llm_metrics.increment("cache_hits")
+        llm_metrics.observe_latency((time.monotonic() - request_start) * 1000)
+        _log_line(
+            "RAG chat cache hit",
+            query=f"'{chat_request.query[:60]}'",
+            response_time_ms=f"{(time.monotonic() - request_start) * 1000:.0f}",
+            cache_hit=True, semantic_cache_hit=False,
+        )
+        return cached_response
+
+    # Semantic cache check - a differently-worded but near-identical
+    # question (cosine similarity >= SEMANTIC_CACHE_THRESHOLD) also skips
+    # retrieval + the Gemini call. Reuses the existing embedding model
+    # (sentence-transformers/all-MiniLM-L6-v2) - no new model introduced.
+    query_embedding = await asyncio.to_thread(
+        embedding_service.generate_embedding, chat_request.query.strip()
+    )
+    semantic_hit = chat_cache.get_semantic(
+        user_id=user_id,
+        document_id=chat_request.document_id,
+        question_embedding=query_embedding,
+    )
+    if semantic_hit is not None:
+        llm_metrics.increment("semantic_cache_hits")
+        llm_metrics.observe_latency((time.monotonic() - request_start) * 1000)
+        _log_line(
+            "RAG chat semantic cache hit",
+            query=f"'{chat_request.query[:60]}'",
+            response_time_ms=f"{(time.monotonic() - request_start) * 1000:.0f}",
+            cache_hit=False, semantic_cache_hit=True,
+        )
+        chat_cache.set(cache_key, semantic_hit, embedding=query_embedding)
+        return semantic_hit
+
     try:
         db = get_database()
 
         retrieved_chunks = await retrieval_service.retrieve_relevant_chunks(
             db=db,
             query=chat_request.query,
-            user_id=str(current_user.id),
+            user_id=user_id,
             document_id=chat_request.document_id,
             top_k=top_k,
             min_score=0.0,
         )
-        
+
+        # Skip the Gemini call entirely when there is nothing relevant to
+        # answer from - saves an API request outright.
+        if not retrieved_chunks:
+            llm_metrics.increment("gemini_call_skipped_no_chunks")
+            chat_response = ChatResponse(
+                query=chat_request.query,
+                answer="I couldn't find relevant information in the selected document.",
+                sources=[],
+                model=llm_service.DEFAULT_MODEL,
+                num_chunks=0,
+            )
+            llm_metrics.observe_latency((time.monotonic() - request_start) * 1000)
+            _log_line(
+                "RAG chat completed (no relevant chunks, Gemini not called)",
+                query=f"'{chat_request.query[:60]}'",
+                retrieved_chunks=0, chunks_sent=0,
+                response_time_ms=f"{(time.monotonic() - request_start) * 1000:.0f}",
+                cache_hit=False, semantic_cache_hit=False,
+            )
+            chat_cache.set(cache_key, chat_response, embedding=query_embedding)
+            return chat_response
+
         # Step 2: Generate LLM answer
+        llm_metrics.increment("gemini_requests")
         logger.info("🧠 Calling LLM for answer generation...")
-        
+
         llm_result = await llm_service.generate_answer(
             query=chat_request.query,
             chunks=retrieved_chunks,
             model=llm_service.DEFAULT_MODEL
         )
-        
-        # Step 3: Format response with source metadata
+
+        # Step 3: Format response with source metadata & document names
+        doc_ids = {chunk["document_id"] for chunk in retrieved_chunks}
+        doc_names = {}
+        for did in doc_ids:
+            try:
+                d = await db.documents.find_one({"_id": ObjectId(did)})
+                if d:
+                    doc_names[did] = d.get("filename")
+            except Exception:
+                pass
+
         sources = [
             ChatSourceMetadata(
                 document_id=chunk["document_id"],
                 chunk_index=chunk["chunk_index"],
                 score=chunk["score"],
+                content=chunk.get("content"),
+                document_name=doc_names.get(chunk["document_id"]),
             )
             for chunk in retrieved_chunks
         ]
-        
+
         chat_response = ChatResponse(
             query=chat_request.query,
             answer=llm_result["answer"],
@@ -733,14 +954,25 @@ async def chat(
             model=llm_result["model"],
             num_chunks=len(retrieved_chunks),
         )
-        
-        logger.info(
-            f"RAG chat completed: {len(retrieved_chunks)} chunks, "
-            f"model={llm_result['model']}, user={current_user.email}"
+
+        response_time_ms = (time.monotonic() - request_start) * 1000
+        llm_metrics.observe_latency(response_time_ms)
+        _log_line(
+            "RAG chat completed",
+            query=f"'{chat_request.query[:60]}'",
+            retrieved_chunks=len(retrieved_chunks),
+            chunks_sent=llm_result.get("num_chunks_sent"),
+            estimated_prompt_tokens=llm_result.get("estimated_prompt_tokens"),
+            response_tokens=llm_result.get("response_tokens"),
+            model=llm_result["model"],
+            retry_count=llm_result.get("retry_count"),
+            response_time_ms=f"{response_time_ms:.0f}",
+            cache_hit=False, semantic_cache_hit=False,
         )
-        
+
+        chat_cache.set(cache_key, chat_response, embedding=query_embedding)
         return chat_response
-    
+
     except HTTPException:
         raise
     except ValueError as e:
@@ -750,25 +982,34 @@ async def chat(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
-    
+
+    except LLMAuthError as e:
+        llm_metrics.increment("auth_failures")
+        logger.error(f"❌ Gemini API key invalid: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(e))
+
+    except (LLMQuotaExceededError, LLMRateLimitError) as e:
+        llm_metrics.increment("quota_failures")
+        logger.error(f"❌ Gemini quota/rate limit: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
+
+    except LLMTimeoutError as e:
+        llm_metrics.increment("timeouts")
+        logger.error(f"❌ Gemini API timeout: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_504_GATEWAY_TIMEOUT, detail=str(e))
+
+    except (LLMUnavailableError, LLMModelNotFoundError) as e:
+        llm_metrics.increment("unavailable_errors")
+        logger.error(f"❌ Gemini API unavailable: {str(e)}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(e))
+
     except RuntimeError as e:
-        # LLM service error - check if Ollama is running
-        error_msg = str(e).lower()
-        
-        if "ollama" in error_msg and ("unreachable" in error_msg or "connect" in error_msg):
-            logger.error(f"❌ Ollama API unreachable: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="LLM service (Ollama) is not running. "
-                       "Please start it with: ollama run mistral"
-            )
-        else:
-            logger.error(f"❌ LLM generation failed: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"LLM answer generation failed: {str(e)}"
-            )
-    
+        logger.error(f"❌ LLM generation failed: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"LLM answer generation failed: {str(e)}"
+        )
+
     except Exception as e:
         # Other errors
         logger.error(f"❌ RAG chat failed: {str(e)}", exc_info=True)
@@ -776,3 +1017,93 @@ async def chat(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"RAG chat failed: {str(e)}"
         )
+
+
+# ============================================================================
+# RAG CHAT ENDPOINT - STREAMING VARIANT (OPTIONAL, OFF BY DEFAULT)
+# ============================================================================
+
+@router.post(
+    "/chat/stream",
+    status_code=status.HTTP_200_OK,
+    summary="RAG Chat - Streamed Answer (optional, requires STREAMING_ENABLED=true)",
+)
+async def chat_stream(
+    chat_request: ChatRequest,
+    current_user: User = Depends(get_current_user),
+    top_k: int = settings.TOP_K_RESULTS,
+) -> StreamingResponse:
+    """
+    Same RAG pipeline as POST /chat, but streams the answer text as it
+    is generated instead of waiting for the full response.
+
+    This is an additive endpoint - POST /chat is unchanged and remains
+    the primary, non-streaming API contract the frontend already uses.
+    Disabled by default; enable with STREAMING_ENABLED=true in .env.
+    Not cached (streamed responses aren't cacheable the same way).
+    """
+    import logging
+    from app.db.database import get_database
+
+    logger = logging.getLogger(__name__)
+
+    if not settings.STREAMING_ENABLED:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Streaming is disabled. Set STREAMING_ENABLED=true to enable it."
+        )
+
+    if top_k < 1 or top_k > 20:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="top_k must be between 1 and 20"
+        )
+
+    user_id = str(current_user.id)
+    if not chat_rate_limiter.allow(user_id):
+        retry_after = chat_rate_limiter.retry_after_seconds(user_id)
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=f"Rate limit exceeded ({settings.RATE_LIMIT_PER_MINUTE}/min). Try again in {retry_after}s.",
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    db = get_database()
+    retrieved_chunks = await retrieval_service.retrieve_relevant_chunks(
+        db=db,
+        query=chat_request.query,
+        user_id=user_id,
+        document_id=chat_request.document_id,
+        top_k=top_k,
+        min_score=0.0,
+    )
+
+    if not retrieved_chunks:
+        async def _empty_stream():
+            yield "I couldn't find relevant information in the selected document."
+        return StreamingResponse(_empty_stream(), media_type="text/plain")
+
+    from app.services.llm_service import LLMService
+    dynamic_max_chunks = LLMService.choose_dynamic_chunk_budget(chat_request.query)
+    budgeted_chunks = LLMService.select_chunks_within_budget(retrieved_chunks, max_chunks=dynamic_max_chunks)
+    prompt = LLMService.build_rag_prompt(chat_request.query, budgeted_chunks)
+
+    provider = get_llm_provider()
+    if not hasattr(provider, "generate_answer_stream"):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The configured LLM provider does not support streaming."
+        )
+
+    llm_metrics.increment("gemini_requests")
+
+    async def _token_stream():
+        try:
+            async for piece in provider.generate_answer_stream(prompt):
+                yield piece
+        except (LLMAuthError, LLMQuotaExceededError, LLMRateLimitError,
+                LLMTimeoutError, LLMUnavailableError, LLMModelNotFoundError) as e:
+            logger.error(f"❌ Streaming failed: {str(e)}")
+            yield f"\n[error: {str(e)}]"
+
+    return StreamingResponse(_token_stream(), media_type="text/plain")

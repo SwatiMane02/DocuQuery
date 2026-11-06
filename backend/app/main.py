@@ -28,55 +28,32 @@ Example:
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from fastapi import FastAPI, status
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 from app.core.config import settings
-from app.db.database import connect_to_mongo, close_mongo_connection
-from app.api import auth, documents
+from app.db.database import connect_to_mongo, close_mongo_connection, ping_database
+from app.api import auth, documents, llm_ops, conversations, analytics, admin
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
     FastAPI lifespan context manager for startup/shutdown events.
-    
-    When to use lifespan:
-    - Initialize resources at startup (database connections, caches)
-    - Clean up resources at shutdown (close connections, save state)
-    - Happens before first request / after last request
-    
-    Process:
-    1. FastAPI calls lifespan() on startup
-    2. Code before yield runs (startup)
-    3. yield pauses, app runs normally
-    4. On shutdown, code after yield runs (cleanup)
-    5. FastAPI closes context manager
-    
-    Startup Tasks:
-    - Connect to MongoDB (await connect_to_mongo())
-    - Initialize cache (if using Redis, Memcached, etc.)
-    - Load configuration files
-    - Start background tasks
-    
-    Shutdown Tasks:
-    - Close database connections (await close_mongo_connection())
-    - Save state to file/database
-    - Stop background tasks
-    
-    Args:
-        app: FastAPI application instance
     """
     # ===== STARTUP =====
-    # Configure logging level for app
     import logging
     logging.getLogger("app").setLevel(logging.INFO)
+
+    # Validate production configuration
+    settings.validate_production_config()
     
     # Connect to MongoDB when application starts
     await connect_to_mongo()
 
     # ===== APPLICATION RUNNING =====
-    # yield pauses here; application serves requests
     yield
 
     # ===== SHUTDOWN =====
@@ -103,18 +80,13 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",      # Vite dev server (default)
-        "http://localhost:3000",      # Alternative dev port
-        "http://localhost:8080",      # Alternative dev port
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:8080",
-    ],
+    allow_origins=settings.cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 
 # ============================================================================
@@ -130,6 +102,19 @@ app.include_router(auth.router)
 # All routes in documents.router will be prefixed with /documents
 # Example: POST /documents/upload, GET /documents, DELETE /documents/{id}
 app.include_router(documents.router)
+
+# Include conversations router
+# All routes in conversations.router will be prefixed with /conversations
+app.include_router(conversations.router)
+
+# Include analytics router: /analytics/user
+app.include_router(analytics.router)
+
+# Include admin router: /admin/stats, /admin/users
+app.include_router(admin.router)
+
+# Include LLM ops router: GET /health/llm, GET /metrics/llm
+app.include_router(llm_ops.router)
 
 
 # ============================================================================
@@ -153,17 +138,24 @@ def root():
 @app.get("/health")
 async def health_check():
     """
-    Health check endpoint - verify API and database are running.
+    Health check endpoint - actively verify API and database connectivity.
     
     Used by:
     - Load balancers to verify server is healthy
     - Monitoring systems to track uptime
-    - Kubernetes liveness probes
+    - Kubernetes liveness/readiness probes
     
     Returns:
-        Status information (status: "healthy", database: "connected")
+        200 OK when healthy and database connected
+        503 Service Unavailable when database unreachable
     """
-    return {
-        "status": "healthy",
-        "database": "connected"
+    db_connected = await ping_database()
+    content = {
+        "status": "healthy" if db_connected else "unhealthy",
+        "database": "connected" if db_connected else "disconnected",
+        "app": settings.APP_NAME,
+        "version": settings.APP_VERSION,
+        "environment": settings.ENVIRONMENT,
     }
+    status_code = status.HTTP_200_OK if db_connected else status.HTTP_503_SERVICE_UNAVAILABLE
+    return JSONResponse(status_code=status_code, content=content)
