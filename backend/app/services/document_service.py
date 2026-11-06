@@ -17,15 +17,20 @@ Architecture:
 - On deletion: removes both file and metadata
 """
 
+import asyncio
 import logging
 import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
+from bson import ObjectId
+import cloudinary
+import cloudinary.uploader
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
+from app.core.config import settings
 from app.db.database import get_database
 from app.models.document import Document
 from app.services.extraction_service import extraction_service
@@ -79,6 +84,25 @@ class DocumentService:
         """
         db: AsyncIOMotorDatabase = get_database()
         return db["documents"]
+
+    @staticmethod
+    def configure_cloudinary() -> bool:
+        """
+        Configure Cloudinary client using application settings or environment variables.
+        Returns True if credentials are configured, False otherwise.
+        """
+        cloud_name = settings.CLOUDINARY_CLOUD_NAME or os.getenv("CLOUDINARY_CLOUD_NAME")
+        api_key = settings.CLOUDINARY_API_KEY or os.getenv("CLOUDINARY_API_KEY")
+        api_secret = settings.CLOUDINARY_API_SECRET or os.getenv("CLOUDINARY_API_SECRET")
+        if cloud_name and api_key and api_secret:
+            cloudinary.config(
+                cloud_name=cloud_name,
+                api_key=api_key,
+                api_secret=api_secret,
+                secure=True,
+            )
+            return True
+        return False
     
     @staticmethod
     def _create_uploads_dir() -> None:
@@ -160,33 +184,16 @@ class DocumentService:
         user_id: str,
     ) -> Document:
         """
-        Upload a document: save file and store metadata.
+        Upload a document: upload file to Cloudinary and store metadata in MongoDB.
         
         Process:
-        1. Validate file
-        2. Create user-specific directory
-        3. Save file to disk
-        4. Store metadata in MongoDB
-        5. Return Document object
-        
-        File Organization:
-        Files saved to: backend/uploads/{user_id}/{filename}
-        Example: backend/uploads/507f1f77bcf86cd799439012/resume.pdf
-        
-        Why organize by user_id?
-        - Easy to delete all files for user
-        - Prevents name collisions between users
-        - Can easily move to cloud storage per user
-        
-        Metadata Stored:
-        - user_id: Who uploaded it
-        - filename: Original filename
-        - file_type: MIME type
-        - file_size: Bytes
-        - upload_date: When uploaded
-        - status: "uploaded" (ready for processing)
-        - file_path: Full path on disk
-        - storage_key: Unique ID for file
+        1. Sanitize filename and validate file (type, size, MIME)
+        2. Ensure Cloudinary storage is configured
+        3. Upload original file to Cloudinary with resource_type="raw"
+        4. Store metadata (secure_url, public_id, owner, filename, etc.) in MongoDB
+        5. Extract text from file_content for RAG pipeline
+        6. Chunk extracted text and auto-trigger embedding generation
+        7. Return Document object
         
         Args:
             file_content: Raw file bytes
@@ -200,36 +207,53 @@ class DocumentService:
             
         Raises:
             ValueError: If file validation fails
+            RuntimeError: If Cloudinary upload or configuration fails
         """
+        # Sanitize filename to prevent directory traversal
+        filename = Path(filename).name
+        
         # Validate file
         is_valid, error_msg = DocumentService._validate_file(filename, file_size, content_type)
         if not is_valid:
             raise ValueError(error_msg)
         
-        # Create uploads directory if needed
-        DocumentService._create_uploads_dir()
+        # Verify Cloudinary configuration
+        if not DocumentService.configure_cloudinary():
+            logger.error("Cloudinary storage credentials are not configured")
+            raise RuntimeError("Cloud storage is not configured")
         
-        # Create user-specific directory
-        user_dir = UPLOADS_DIR / user_id
-        user_dir.mkdir(parents=True, exist_ok=True)
+        # Upload original file to Cloudinary using raw resource type for PDF, DOCX, TXT, CSV
+        try:
+            upload_result = await asyncio.to_thread(
+                cloudinary.uploader.upload,
+                file_content,
+                resource_type="raw",
+                folder=f"docuquery/documents/{user_id}",
+                filename=filename,
+                use_filename=True,
+                unique_filename=True,
+            )
+        except Exception as e:
+            logger.error(f"Cloudinary upload failed for filename='{filename}': {str(e)}")
+            raise RuntimeError(f"Cloud storage upload failed: {str(e)}")
         
-        # Save file to disk
-        file_path = user_dir / filename
-        
-        # Write file content to disk
-        # Using synchronous write (FastAPI handles in threadpool for async)
-        with open(file_path, "wb") as f:
-            f.write(file_content)
+        secure_url = upload_result.get("secure_url")
+        public_id = upload_result.get("public_id")
+        if not secure_url or not public_id:
+            logger.error(f"Cloudinary response missing secure_url or public_id: {upload_result}")
+            raise RuntimeError("Cloud storage response missing file URL or ID")
         
         # Create document metadata
-        storage_key = f"{user_id}_{filename}"
+        storage_key = public_id
         document = Document(
             user_id=user_id,
             filename=filename,
             file_type=content_type,
             file_size=file_size,
-            file_path=str(file_path.relative_to(UPLOADS_DIR.parent)),  # Relative path from project root
+            file_path=secure_url,
             storage_key=storage_key,
+            secure_url=secure_url,
+            public_id=public_id,
             upload_date=datetime.utcnow(),
             status="uploaded",
             extraction_status="pending",
@@ -237,12 +261,25 @@ class DocumentService:
         
         # Store metadata in MongoDB
         documents_collection = await DocumentService._get_documents_collection()
-        result = await documents_collection.insert_one(
-            document.model_dump(by_alias=True, exclude_none=True)
-        )
-        
-        # Set the MongoDB-generated _id
-        document.id = str(result.inserted_id)
+        try:
+            result = await documents_collection.insert_one(
+                document.model_dump(by_alias=True, exclude_none=True)
+            )
+            # Set the MongoDB-generated _id
+            document.id = str(result.inserted_id)
+        except Exception as db_err:
+            logger.error(f"Failed to persist document metadata in MongoDB for {filename}: {str(db_err)}")
+            # Rollback: Clean up uploaded Cloudinary file if database operation fails
+            try:
+                await asyncio.to_thread(
+                    cloudinary.uploader.destroy,
+                    public_id,
+                    resource_type="raw",
+                )
+                logger.info(f"Successfully rolled back Cloudinary asset {public_id} after DB insert error")
+            except Exception as rollback_err:
+                logger.error(f"Failed to rollback Cloudinary asset {public_id}: {str(rollback_err)}")
+            raise db_err
         
         # Extract text from document asynchronously
         # This happens in the background without blocking the response
@@ -260,7 +297,7 @@ class DocumentService:
             
             # Update MongoDB document with extracted text
             await documents_collection.update_one(
-                {"_id": document.id},
+                {"_id": ObjectId(document.id)},
                 {
                     "$set": {
                         "extracted_text": extracted_text,
@@ -279,7 +316,7 @@ class DocumentService:
             
             # Update MongoDB with error status
             await documents_collection.update_one(
-                {"_id": document.id},
+                {"_id": ObjectId(document.id)},
                 {
                     "$set": {
                         "extraction_status": "failed",
@@ -308,7 +345,7 @@ class DocumentService:
                 
                 # Update MongoDB with chunk metadata
                 await documents_collection.update_one(
-                    {"_id": document.id},
+                    {"_id": ObjectId(document.id)},
                     {
                         "$set": {
                             "chunk_count": chunk_count,
@@ -341,7 +378,7 @@ class DocumentService:
                 
                 # Update MongoDB with chunking error
                 await documents_collection.update_one(
-                    {"_id": document.id},
+                    {"_id": ObjectId(document.id)},
                     {
                         "$set": {
                             "chunk_status": "failed",
@@ -390,7 +427,7 @@ class DocumentService:
         # Query documents for user
         # Sort by upload_date descending (newest first)
         cursor = documents_collection.find({"user_id": user_id}).sort(
-            "upload_date", -1  # -1 = descending (newest first)
+            [("upload_date", -1), ("uploaded_at", -1)]
         ).skip(skip).limit(limit)
         
         # Convert cursor results to Document objects
@@ -441,59 +478,128 @@ class DocumentService:
         except Exception:
             # ObjectId conversion failed or other error
             return None
+
+    @staticmethod
+    def get_document_path(document_id: str, user_id: str, filename: Optional[str] = None) -> Optional[Path]:
+        """
+        Locate document file path on disk with strict path containment verification.
+        """
+        user_dir = (UPLOADS_DIR / user_id).resolve()
+        if not user_dir.exists():
+            return None
+        
+        if filename:
+            safe_filename = Path(filename).name
+            candidate = (user_dir / safe_filename).resolve()
+            if candidate.is_relative_to(user_dir) and candidate.is_file():
+                return candidate
+
+        # Fallback: scan user_dir
+        for f in user_dir.glob("*"):
+            resolved = f.resolve()
+            if resolved.is_relative_to(user_dir) and resolved.is_file():
+                return resolved
+        return None
     
     @staticmethod
     async def delete_document(document_id: str, user_id: str) -> bool:
         """
-        Delete a document (remove file and metadata).
+        Delete a document (removes Cloudinary asset, local file if legacy, metadata, chunks, and embeddings).
         
         Process:
         1. Find document in MongoDB
         2. Verify user owns it (security)
-        3. Delete file from disk
-        4. Delete metadata from MongoDB
-        5. Return success/failure
-        
-        Error Handling:
-        - If file doesn't exist: still delete metadata
-        - If metadata doesn't exist: file already deleted
-        - Both operations are attempted (file AND metadata)
+        3. Delete Cloudinary asset using public_id (resource_type="raw")
+        4. Delete legacy local file from disk if present
+        5. Cascade delete chunks and embeddings from document_chunks collection
+        6. Delete metadata from MongoDB documents collection
+        7. Return success/failure
         
         Args:
             document_id: MongoDB ObjectId as string
             user_id: User deleting (must be owner)
             
         Returns:
-            True if deleted, False if not found or access denied
+            True if deleted, False if not found or access denied or deletion failed
         """
         from bson import ObjectId
         
         documents_collection = await DocumentService._get_documents_collection()
         
         try:
-            # Find document to get file path
+            # Find document to verify ownership and retrieve storage metadata
             doc = await documents_collection.find_one({
                 "_id": ObjectId(document_id),
                 "user_id": user_id,
             })
             
             if not doc:
+                logger.warning(f"Document {document_id} not found for user {user_id}")
                 return False
             
-            # Delete file from disk
-            if "file_path" in doc:
-                file_path = Path(__file__).parent.parent.parent.parent / doc["file_path"]
-                if file_path.exists():
-                    file_path.unlink()  # Delete file
+            # 1. Remove Cloudinary asset if public_id exists
+            public_id = doc.get("public_id")
+            if public_id:
+                if DocumentService.configure_cloudinary():
+                    try:
+                        res = await asyncio.to_thread(
+                            cloudinary.uploader.destroy,
+                            public_id,
+                            resource_type="raw"
+                        )
+                        logger.info(f"☁️ Cloudinary destroy response for {public_id}: {res}")
+                        # Fallback for assets stored under other resource types
+                        if res.get("result") == "not found":
+                            res_img = await asyncio.to_thread(
+                                cloudinary.uploader.destroy,
+                                public_id,
+                                resource_type="image"
+                            )
+                            logger.info(f"☁️ Cloudinary destroy (image fallback) response: {res_img}")
+                            if res_img.get("result") not in ["ok", "not found"]:
+                                logger.error(f"Cloudinary deletion unconfirmed for {public_id}: {res_img}")
+                                return False
+                        elif res.get("result") not in ["ok", "not found"]:
+                            logger.error(f"Cloudinary deletion unconfirmed for {public_id}: {res}")
+                            return False
+                    except Exception as cl_err:
+                        logger.error(f"⚠️ Cloudinary asset deletion failed for {public_id}: {str(cl_err)}")
+                        # Avoid deleting database records if file deletion fails
+                        return False
+                else:
+                    logger.warning("☁️ Cloudinary credentials not configured, skipping Cloudinary asset cleanup")
             
-            # Delete metadata from MongoDB
+            # 2. Delete file from disk if present (backward compatibility)
+            file_path_str = doc.get("file_path")
+            if file_path_str and not str(file_path_str).startswith("http"):
+                file_path = Path(__file__).parent.parent.parent.parent / file_path_str
+                if file_path.exists() and file_path.is_file():
+                    try:
+                        file_path.unlink()
+                        logger.info(f"📁 Deleted legacy local file from disk: {file_path}")
+                    except Exception as fe:
+                        logger.warning(f"Failed to delete local file {file_path}: {fe}")
+            
+            # 3. Delete chunks and embeddings from MongoDB (cascade)
+            db = documents_collection.database
+            chunks_collection = db["document_chunks"]
+            chunk_result = await chunks_collection.delete_many({
+                "$or": [
+                    {"document_id": document_id},
+                    {"document_id": ObjectId(document_id)}
+                ]
+            })
+            logger.info(f"🗑️ Cleaned up {chunk_result.deleted_count} chunks/embeddings for document {document_id}")
+            
+            # 4. Delete metadata from MongoDB
             result = await documents_collection.delete_one({
                 "_id": ObjectId(document_id),
                 "user_id": user_id,
             })
             
             return result.deleted_count == 1
-        except Exception:
+        except Exception as e:
+            logger.error(f"❌ Document deletion failed: {str(e)}", exc_info=True)
             return False
 
 

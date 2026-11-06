@@ -34,6 +34,7 @@ Why async embeddings?
 """
 
 import asyncio
+from datetime import datetime
 import logging
 from typing import List
 
@@ -247,32 +248,37 @@ class EmbeddingService:
                 try:
                     from bson import ObjectId
 
-                    # PHASE 1 FIX 1.4: Validate embedding dimension
+                    # Validate embedding dimension
                     if len(embedding_vector) != 384:
                         error_msg = f"Invalid embedding dimension for chunk {chunk_id}: {len(embedding_vector)} (expected 384)"
                         errors.append(error_msg)
                         logger.error(error_msg)
                         continue
 
+                    query = {"_id": ObjectId(chunk_id)} if ObjectId.is_valid(chunk_id) else {"_id": chunk_id}
                     result = await collection.update_one(
-                        {"_id": ObjectId(chunk_id)},
+                        query,
                         {
                             "$set": {
                                 "embedding_vector": embedding_vector,
-                                "embedding_status": "completed"
+                                "embedding_status": "completed",
+                                "updated_at": datetime.utcnow()
                             }
                         }
                     )
 
-                    if result.modified_count > 0:
+                    if result.matched_count > 0 or result.modified_count > 0:
                         updates += 1
+                    else:
+                        error_msg = f"Chunk not found in database: {chunk_id}"
+                        errors.append(error_msg)
+                        logger.error(error_msg)
 
                 except Exception as e:
                     error_msg = f"Failed to update chunk {chunk_id}: {str(e)}"
                     errors.append(error_msg)
                     logger.error(error_msg)
             
-            # PHASE 1 FIX 1.3: Validate embedding count
             if updates != len(chunk_embeddings):
                 error_summary = f"Partial embedding failure: {updates}/{len(chunk_embeddings)} chunks updated"
                 logger.error(f"⚠️  {error_summary}")
