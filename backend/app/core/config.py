@@ -12,6 +12,7 @@ Key concepts:
 - Settings are loaded once at startup for performance
 """
 
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
@@ -37,18 +38,37 @@ class Settings(BaseSettings):
     # Application metadata
     APP_NAME: str = Field(default="DocuQuery API", description="Application name")
     APP_VERSION: str = Field(default="1.0.0", description="Application version")
+    ENVIRONMENT: str = Field(
+        default="development",
+        description="Application environment: development, staging, production, test"
+    )
+    PORT: int = Field(default=8000, description="Port for running the application")
     
     # Debug mode - controls verbose logging and error details
     DEBUG: bool = Field(default=False, description="Enable debug mode")
+
+    # CORS configuration - comma-separated list of allowed origins
+    CORS_ORIGINS: str = Field(
+        default="http://localhost:5173,http://localhost:3000,http://localhost:8080,http://127.0.0.1:5173,http://127.0.0.1:3000,http://127.0.0.1:8080",
+        description="Allowed CORS origins (comma-separated string)"
+    )
     
-    # Database configuration
+    # Database configuration (MongoDB Atlas / Cloud / Local)
     MONGODB_URI: str = Field(
         default="mongodb://localhost:27017",
-        description="MongoDB connection string"
+        description="MongoDB connection string (e.g., mongodb+srv://... for MongoDB Atlas)"
     )
     DATABASE_NAME: str = Field(
         default="docuquery",
         description="MongoDB database name"
+    )
+    MONGODB_SERVER_SELECTION_TIMEOUT_MS: int = Field(
+        default=5000,
+        description="Server selection timeout in ms for MongoDB Atlas"
+    )
+    MONGODB_CONNECT_TIMEOUT_MS: int = Field(
+        default=5000,
+        description="Connection timeout in ms for MongoDB Atlas"
     )
     
     # Security settings
@@ -64,12 +84,173 @@ class Settings(BaseSettings):
         default=30,
         description="JWT access token expiration time in minutes"
     )
-    
+
+    # Cloudinary storage configuration
+    CLOUDINARY_CLOUD_NAME: str = Field(
+        default="",
+        description="Cloudinary cloud name for file storage"
+    )
+    CLOUDINARY_API_KEY: str = Field(
+        default="",
+        description="Cloudinary API key"
+    )
+    CLOUDINARY_API_SECRET: str = Field(
+        default="",
+        description="Cloudinary API secret"
+    )
+
+    # Gemini LLM configuration
+    GEMINI_API_KEY: str = Field(
+        default="",
+        description="API key for Google Gemini (generative-language) API"
+    )
+    GEMINI_MODEL: str = Field(
+        default="gemini-2.5-flash",
+        description="Gemini model used for RAG answer generation"
+    )
+    GEMINI_TIMEOUT_SECONDS: float = Field(
+        default=30.0,
+        description="Max time to wait for a single Gemini API call"
+    )
+    GEMINI_MAX_RETRIES: int = Field(
+        default=2,
+        description="Max retries (with exponential backoff) for transient Gemini errors"
+    )
+
+    # RAG retrieval / context-budget configuration
+    TOP_K_RESULTS: int = Field(
+        default=10,
+        description="Default number of chunks retrieved for /chat"
+    )
+    MAX_CONTEXT_CHUNKS: int = Field(
+        default=10,
+        description="Max number of chunks to include in the prompt after budgeting"
+    )
+    MAX_CONTEXT_CHARACTERS: int = Field(
+        default=12000,
+        description="Max total characters of chunk content sent to the LLM per request"
+    )
+    MAX_OUTPUT_TOKENS: int = Field(
+        default=512,
+        description="Max tokens Gemini may generate per answer"
+    )
+    TEMPERATURE: float = Field(
+        default=0.2,
+        description="Gemini sampling temperature (low = deterministic, factual)"
+    )
+
+    # In-memory answer cache (per document_id + question)
+    CHAT_CACHE_TTL_SECONDS: int = Field(
+        default=600,
+        description="How long an identical question's answer is cached (10 min default)"
+    )
+    SEMANTIC_CACHE_THRESHOLD: float = Field(
+        default=0.95,
+        description="Min cosine similarity between question embeddings to serve a semantic cache hit"
+    )
+
+    # Dynamic context budget (chunk count is chosen per-query, within these bounds)
+    MIN_CONTEXT_CHUNKS: int = Field(
+        default=2,
+        description="Fewest chunks to send for a short factual question"
+    )
+    DEFAULT_CONTEXT_CHUNKS: int = Field(
+        default=5,
+        description="Chunks to send for a normal question"
+    )
+
+    # Token budgeting (approximate; stops adding chunks once exceeded)
+    MAX_PROMPT_TOKENS: int = Field(
+        default=3000,
+        description="Approximate max tokens (prompt) sent to the LLM per request"
+    )
+
+    # Streaming
+    STREAMING_ENABLED: bool = Field(
+        default=False,
+        description="Enable POST /documents/chat/stream (SSE-style token streaming)"
+    )
+
+    # Rate limiting (in-memory, per user)
+    RATE_LIMIT_PER_MINUTE: int = Field(
+        default=20,
+        description="Max /chat requests per user per rolling 60s window"
+    )
+
+    # Provider selection (future-proofing: openai, groq, claude, ...)
+    LLM_PROVIDER: str = Field(
+        default="gemini",
+        description="Which LLM provider LLMProviderFactory should construct"
+    )
+
+    @property
+    def cors_origins_list(self) -> list[str]:
+        """
+        Parse CORS_ORIGINS into a clean list of allowed origin strings.
+        Supports comma-separated strings or pre-configured lists.
+        """
+        if not self.CORS_ORIGINS:
+            return ["*"] if self.DEBUG else []
+        if isinstance(self.CORS_ORIGINS, list):
+            return self.CORS_ORIGINS
+        # Split by comma, strip whitespace, remove empty items
+        return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    def validate_production_config(self) -> None:
+        """
+        Validate critical environment variables for production deployments.
+        Raises clear, actionable RuntimeError messages without leaking secrets.
+        """
+        is_prod = self.ENVIRONMENT.lower() == "production" or (not self.DEBUG and self.ENVIRONMENT.lower() != "development")
+        
+        # 1. SECRET_KEY validation
+        if not self.SECRET_KEY or len(self.SECRET_KEY) < 32:
+            raise RuntimeError(
+                "Production configuration error: SECRET_KEY must be set to a secure key of at least 32 characters."
+            )
+        if "your-super-secret-key" in self.SECRET_KEY or "change-this" in self.SECRET_KEY:
+            raise RuntimeError(
+                "Production configuration error: SECRET_KEY contains default placeholder value. Set a secure production secret key."
+            )
+
+        # 2. Database validation
+        if not self.MONGODB_URI:
+            raise RuntimeError(
+                "Production configuration error: MONGODB_URI environment variable is required."
+            )
+        if is_prod and ("localhost" in self.MONGODB_URI.lower() or "127.0.0.1" in self.MONGODB_URI):
+            raise RuntimeError(
+                "Production configuration error: MONGODB_URI points to localhost in production mode. "
+                "Configure a valid MongoDB Atlas connection string (e.g., mongodb+srv://...)."
+            )
+
+        # 3. Gemini API Key validation
+        if not self.GEMINI_API_KEY or "your_gemini_api_key" in self.GEMINI_API_KEY:
+            if is_prod:
+                raise RuntimeError(
+                    "Production configuration error: GEMINI_API_KEY must be set for production AI operations."
+                )
+
+        # 4. Cloudinary configuration validation
+        if is_prod:
+            missing_cloudinary = []
+            if not self.CLOUDINARY_CLOUD_NAME or "your_cloudinary" in self.CLOUDINARY_CLOUD_NAME:
+                missing_cloudinary.append("CLOUDINARY_CLOUD_NAME")
+            if not self.CLOUDINARY_API_KEY or "your_cloudinary" in self.CLOUDINARY_API_KEY:
+                missing_cloudinary.append("CLOUDINARY_API_KEY")
+            if not self.CLOUDINARY_API_SECRET or "your_cloudinary" in self.CLOUDINARY_API_SECRET:
+                missing_cloudinary.append("CLOUDINARY_API_SECRET")
+            if missing_cloudinary:
+                missing_vars = ", ".join(missing_cloudinary)
+                raise RuntimeError(
+                    f"Production configuration error: Missing Cloudinary credentials ({missing_vars}) for cloud file storage."
+                )
+
     class Config:
         """Pydantic configuration for BaseSettings."""
         # Load environment variables from .env file
         # Requires: pip install python-dotenv
-        env_file = ".env"
+        env_file = str(Path(__file__).resolve().parent.parent.parent / ".env")
         env_file_encoding = "utf-8"
         # Case-insensitive environment variable matching
         case_sensitive = False

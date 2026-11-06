@@ -49,17 +49,37 @@ def hash_password(password: str) -> str:
     3. Applies multiple hashing rounds (slowing computation)
     4. Returns hashed password (can never be reversed)
     
+    IMPORTANT - BCRYPT 72-BYTE LIMIT:
+    - Bcrypt truncates passwords longer than 72 bytes
+    - Passwords are already validated at schema level to enforce this
+    - If you see "password cannot be longer than 72 bytes" error:
+      * Check requirements.txt: passlib and bcrypt versions
+      * Ensure compatibility: passlib[bcrypt] with bcrypt>=4.0.0
+      * Validate that UserCreate schema enforces 72-byte limit
+    
     Example:
         plain_password = "MySecurePassword123!"
         hashed = hash_password(plain_password)
         # hashed = "$2b$12$abcdef1234567890..." (different each time due to salt)
     
     Args:
-        password: Plain-text password from user input
+        password: Plain-text password from user input (max 72 UTF-8 bytes)
         
     Returns:
         Hashed password string (safe to store in database)
+        
+    Raises:
+        ValueError: If password exceeds 72 bytes (caught by schema validator first)
     """
+    # Validate 72-byte limit at runtime as defense-in-depth
+    password_bytes = password.encode('utf-8')
+    if len(password_bytes) > 72:
+        raise ValueError(
+            f'Password is {len(password_bytes)} bytes, exceeds bcrypt 72-byte limit. '
+            f'This should have been caught by schema validation. '
+            f'Please check UserCreate schema in app/schemas/user.py'
+        )
+    
     return pwd_context.hash(password)
 
 

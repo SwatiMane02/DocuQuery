@@ -304,6 +304,49 @@ class AuthService:
         
         return user
 
+    @staticmethod
+    async def update_profile(user_id: str, data: dict) -> User | None:
+        """Update user profile fields (e.g. full_name, bio)."""
+        from bson import ObjectId
+        from datetime import datetime
+
+        users_collection = await AuthService._get_users_collection()
+        update_data = {k: v for k, v in data.items() if v is not None}
+        if not update_data:
+            user_doc = await users_collection.find_one({"_id": ObjectId(user_id)})
+            return User(**user_doc) if user_doc else None
+
+        update_data["updated_at"] = datetime.utcnow()
+        await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": update_data}
+        )
+
+        updated_doc = await users_collection.find_one({"_id": ObjectId(user_id)})
+        return User(**updated_doc) if updated_doc else None
+
+    @staticmethod
+    async def change_password(user_id: str, current_password: str, new_password: str) -> bool:
+        """Verify current password and set new password."""
+        from bson import ObjectId
+        from datetime import datetime
+
+        users_collection = await AuthService._get_users_collection()
+        user_doc = await users_collection.find_one({"_id": ObjectId(user_id)})
+        if not user_doc:
+            return False
+
+        user = User(**user_doc)
+        if not verify_password(current_password, user.hashed_password):
+            return False
+
+        new_hashed = hash_password(new_password)
+        await users_collection.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": {"hashed_password": new_hashed, "updated_at": datetime.utcnow()}}
+        )
+        return True
+
 
 # Create singleton instance for use throughout app
 auth_service = AuthService()

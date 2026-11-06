@@ -29,7 +29,7 @@ Benefit:
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 # ============================================================================
@@ -49,11 +49,17 @@ class UserCreate(BaseModel):
     
     Pydantic validates:
     - email: Valid email format (using EmailStr validator)
-    - password: At least 8 characters (checked in route handler)
+    - password: At least 8 characters, max 72 bytes (bcrypt limit)
     - full_name: Non-empty string, max 100 characters
     
     Important: This schema does NOT have a hashed_password field
     because clients send plain-text passwords, which the server hashes.
+    
+    BCRYPT PASSWORD LIMIT:
+    - Bcrypt has a hard limit of 72 bytes per password
+    - Passwords longer than 72 bytes are truncated silently
+    - This creates a security risk: two different long passwords might hash the same
+    - Solution: Enforce 72-byte limit at the schema level
     
     Attributes:
         email: Email address (must be valid format, unique in database)
@@ -69,8 +75,8 @@ class UserCreate(BaseModel):
     password: str = Field(
         ...,
         min_length=8,
-        max_length=128,
-        description="Plain-text password (at least 8 characters)"
+        max_length=72,
+        description="Plain-text password (8-72 characters, bcrypt limit enforced)"
     )
     full_name: str = Field(
         ...,
@@ -78,6 +84,25 @@ class UserCreate(BaseModel):
         max_length=100,
         description="User full name"
     )
+    
+    @field_validator('password')
+    @classmethod
+    def validate_password_bytes(cls, v: str) -> str:
+        """
+        Validate password respects bcrypt's 72-byte limit.
+        
+        Bcrypt truncates passwords longer than 72 bytes, which could create
+        a security vulnerability where two different passwords hash to the same value.
+        
+        This validator catches this issue before hashing.
+        """
+        password_bytes = v.encode('utf-8')
+        if len(password_bytes) > 72:
+            raise ValueError(
+                f'Password exceeds bcrypt limit: {len(password_bytes)} bytes > 72 bytes. '
+                f'Please use a shorter password.'
+            )
+        return v
     
     class Config:
         json_schema_extra = {
@@ -123,49 +148,35 @@ class UserLogin(BaseModel):
 # RESPONSE SCHEMAS (What server sends to clients)
 # ============================================================================
 
+class UserUpdate(BaseModel):
+    """Schema for updating user profile."""
+    full_name: Optional[str] = Field(None, min_length=1, max_length=100, description="Updated full name")
+    bio: Optional[str] = Field(None, max_length=500, description="Updated biography")
+
+
+class PasswordChangeRequest(BaseModel):
+    """Schema for changing password."""
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., min_length=8, max_length=72, description="New password")
+
+
 class UserResponse(BaseModel):
     """
     Schema for user profile responses.
     
     Sent to clients in responses to registration and GET /auth/me requests.
-    
-    Important Security Decision:
-    - hashed_password is NEVER included in responses
-    - Clients don't need to see password hash
-    - Exposing hashes would be a security risk
-    - is_active tells client if account is active
-    
-    Response example:
-    {
-        "id": "507f1f77bcf86cd799439011",
-        "email": "john@example.com",
-        "full_name": "John Doe",
-        "role": "free",
-        "documents_limit": 10,
-        "is_active": true,
-        "created_at": "2024-05-24T10:30:00Z"
-    }
-    
-    Attributes:
-        id: MongoDB ObjectId (shown to client for reference)
-        email: Email address
-        full_name: User display name
-        role: User tier ("free" or "pro")
-        documents_limit: Max documents for this account
-        is_active: Whether account is active
-        created_at: When account was created
     """
-    
     id: Optional[str] = Field(None, alias="_id", description="User ID")
     email: EmailStr = Field(..., description="User email")
     full_name: str = Field(..., description="User full name")
+    bio: Optional[str] = Field(default=None, description="User biography")
     role: str = Field(..., description="User role (free/pro)")
     documents_limit: int = Field(..., description="Document upload limit")
     is_active: bool = Field(..., description="Whether account is active")
     created_at: datetime = Field(..., description="Account creation time")
     
     class Config:
-        populate_by_name = True  # Allow both "id" and "_id"
+        populate_by_name = True
         json_schema_extra = {
             "example": {
                 "_id": "507f1f77bcf86cd799439011",

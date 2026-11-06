@@ -42,7 +42,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
 from app.core.security import create_access_token
 from app.models.user import User
-from app.schemas.user import UserCreate, UserLogin, UserResponse, Token
+from app.schemas.user import UserCreate, UserLogin, UserResponse, Token, UserUpdate, PasswordChangeRequest
 from app.services.auth_service import auth_service
 
 
@@ -116,6 +116,23 @@ async def get_current_user(
         )
     
     return user
+
+
+async def get_current_admin(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """
+    Dependency for protected admin routes.
+    
+    Verifies that the current authenticated user has the 'admin' role.
+    """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access forbidden: admin role required",
+        )
+    return current_user
+
 
 
 # ============================================================================
@@ -294,3 +311,50 @@ async def get_current_user_profile(
     # The dependency injection already validated the token
     # and loaded the user from database
     return current_user
+
+
+@router.put("/me", response_model=UserResponse, summary="Update user profile")
+async def update_profile(
+    payload: UserUpdate,
+    current_user: User = Depends(get_current_user),
+) -> UserResponse:
+    """Update profile information (e.g., full_name, bio)."""
+    updated = await auth_service.update_profile(
+        user_id=str(current_user.id),
+        data=payload.model_dump(exclude_none=True),
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found",
+        )
+    return updated
+
+
+@router.post("/change-password", summary="Change user password")
+async def change_password(
+    payload: PasswordChangeRequest,
+    current_user: User = Depends(get_current_user),
+) -> dict:
+    """Change account password."""
+    success = await auth_service.change_password(
+        user_id=str(current_user.id),
+        current_password=payload.current_password,
+        new_password=payload.new_password,
+    )
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    return {"message": "Password changed successfully"}
+
+
+@router.get("/admin-check", response_model=UserResponse)
+async def check_admin_access(
+    current_admin: User = Depends(get_current_admin),
+) -> UserResponse:
+    """
+    Endpoint to verify admin access. Protected by get_current_admin.
+    """
+    return current_admin

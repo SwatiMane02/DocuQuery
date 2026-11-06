@@ -78,6 +78,9 @@ class User(BaseModel):
     email: EmailStr = Field(..., description="User email (unique, validated)")
     full_name: str = Field(..., min_length=1, max_length=100, description="User full name")
     
+    # User profile
+    bio: Optional[str] = Field(default=None, description="User biography")
+    
     # Security
     hashed_password: str = Field(..., description="bcrypt hashed password (never plain text)")
     
