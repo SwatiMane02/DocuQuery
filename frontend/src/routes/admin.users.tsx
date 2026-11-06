@@ -1,47 +1,139 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useState, useEffect, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Users, Activity, Crown, Eye, MoreVertical } from "lucide-react";
+import {
+  Users,
+  Crown,
+  ShieldCheck,
+  Search,
+  Loader2,
+  Trash2,
+  ShieldAlert,
+  UserCheck,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { adminUsers } from "@/lib/mock-data";
+import {
+  AdminService,
+  AdminStatsResponse,
+} from "@/services/adminService";
+import { UserResponse } from "@/services/authService";
+import { toast } from "sonner";
 
 export const Route = createFileRoute("/admin/users")({ component: AdminUsers });
 
-const stats = [
-  {
-    icon: Users,
-    label: "Total Users",
-    value: "12,842",
-    delta: "+12% from last month",
-    tint: "bg-primary/10 text-primary",
-  },
-  {
-    icon: Activity,
-    label: "Active Today",
-    value: "1,402",
-    delta: "+1k recently",
-    tint: "bg-sage/15 text-primary",
-  },
-  {
-    icon: Crown,
-    label: "Pro Subscribers",
-    value: "3,291",
-    delta: "25.6% of total user base",
-    tint: "bg-gold/15 text-gold",
-  },
-];
-
 const roleTint: Record<string, string> = {
-  Admin: "bg-primary/15 text-primary",
-  Pro: "bg-gold/15 text-gold",
-  Free: "bg-muted text-muted-foreground",
+  admin: "bg-primary/15 text-primary border border-primary/20",
+  pro: "bg-gold/15 text-gold border border-gold/20",
+  free: "bg-muted text-muted-foreground",
 };
 
 function AdminUsers() {
+  const [stats, setStats] = useState<AdminStatsResponse | null>(null);
+  const [users, setUsers] = useState<UserResponse[]>([]);
+  const [total, setTotal] = useState(0);
+  const [search, setSearch] = useState("");
+  const [roleFilter, setRoleFilter] = useState("All");
+  const [loading, setLoading] = useState(true);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const data = await AdminService.getStats();
+      setStats(data);
+    } catch {
+      // Ignored for unauthenticated or non-admin view
+    }
+  }, []);
+
+  const fetchUsers = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await AdminService.getUsers(
+        0,
+        50,
+        search.trim() || undefined,
+        roleFilter !== "All" ? roleFilter.toLowerCase() : undefined,
+      );
+      setUsers(data.users);
+      setTotal(data.total);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to load users";
+      toast.error(msg);
+    } finally {
+      setLoading(false);
+    }
+  }, [search, roleFilter]);
+
+  useEffect(() => {
+    fetchStats();
+  }, [fetchStats]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      fetchUsers();
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [fetchUsers]);
+
+  const handleRoleChange = async (userId: string, newRole: string) => {
+    setActionLoading(userId);
+    try {
+      await AdminService.updateUser(userId, { role: newRole });
+      toast.success(`User role updated to ${newRole}`);
+      await fetchUsers();
+      await fetchStats();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to update role";
+      toast.error(msg);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string, email: string) => {
+    if (!confirm(`Are you sure you want to permanently delete user ${email}? This will delete all their documents and conversations.`)) {
+      return;
+    }
+    setActionLoading(userId);
+    try {
+      await AdminService.deleteUser(userId);
+      toast.success("User deleted successfully");
+      await fetchUsers();
+      await fetchStats();
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Failed to delete user";
+      toast.error(msg);
+    } finally {
+      setActionLoading(null);
+    }
+  };
+
+  const statCards = [
+    {
+      icon: Users,
+      label: "Total Registered Users",
+      value: stats ? stats.total_users.toLocaleString() : "—",
+      tint: "bg-primary/10 text-primary",
+    },
+    {
+      icon: Crown,
+      label: "Pro Subscribers",
+      value: stats ? stats.pro_users_count.toLocaleString() : "—",
+      tint: "bg-gold/15 text-gold",
+    },
+    {
+      icon: ShieldCheck,
+      label: "Admin Accounts",
+      value: stats ? stats.admin_users_count.toLocaleString() : "—",
+      tint: "bg-sage/15 text-primary",
+    },
+  ];
+
   return (
     <div className="space-y-7">
       <div className="grid gap-4 md:grid-cols-3">
-        {stats.map((s, i) => (
+        {statCards.map((s, i) => (
           <motion.div
             key={s.label}
             initial={{ opacity: 0, y: 10 }}
@@ -60,7 +152,6 @@ function AdminUsers() {
                 <s.icon className="h-4 w-4" />
               </div>
             </div>
-            <div className="mt-2 text-xs text-primary">↑ {s.delta}</div>
           </motion.div>
         ))}
       </div>
@@ -69,142 +160,175 @@ function AdminUsers() {
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-5">
           <div>
             <h2 className="font-serif text-xl font-semibold">User Directory</h2>
+            <p className="text-xs text-muted-foreground">
+              Showing {users.length} of {total} total users
+            </p>
           </div>
-          <div className="flex items-center gap-2">
-            <Input
-              placeholder="Search users by name or email..."
-              className="h-9 w-64 rounded-full"
-            />
-            <div className="inline-flex rounded-full border border-border p-0.5 text-xs">
-              {["All", "Active", "Banned"].map((t, i) => (
+          <div className="flex items-center gap-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search name or email..."
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-9 w-64 rounded-full pl-8"
+              />
+            </div>
+            <div className="inline-flex rounded-full border border-border p-0.5 text-xs bg-muted/40">
+              {["All", "Free", "Pro", "Admin"].map((t) => (
                 <button
                   key={t}
-                  className={`rounded-full px-3 py-1 ${i === 0 ? "bg-primary text-primary-foreground" : "text-muted-foreground"}`}
+                  onClick={() => setRoleFilter(t)}
+                  className={`rounded-full px-3 py-1 transition-colors ${
+                    roleFilter === t
+                      ? "bg-primary text-primary-foreground font-medium"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
                 >
                   {t}
                 </button>
               ))}
             </div>
-            <Button variant="outline" size="sm" className="rounded-full">
-              More Filters
-            </Button>
           </div>
         </div>
-        <table className="w-full text-sm">
-          <thead className="bg-muted/40 text-xs uppercase tracking-wider text-muted-foreground">
-            <tr>
-              <th className="px-5 py-3 text-left">Name</th>
-              <th className="px-5 py-3 text-left">Email</th>
-              <th className="px-5 py-3 text-left">Role</th>
-              <th className="px-5 py-3 text-left">Status</th>
-              <th className="px-5 py-3 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {adminUsers.map((u, i) => (
-              <motion.tr
-                key={u.email}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ delay: i * 0.05 }}
-                className="border-t border-border transition hover:bg-muted/30"
-              >
-                <td className="px-5 py-4">
-                  <div className="flex items-center gap-3">
-                    <div className="h-9 w-9 rounded-full bg-gradient-to-br from-sage to-primary" />
-                    <div>
-                      <div
-                        className={`font-medium ${u.status === "Banned" ? "line-through opacity-60" : ""}`}
-                      >
-                        {u.name}
-                      </div>
-                      <div className="text-xs text-muted-foreground">
-                        {u.joined}
-                      </div>
-                    </div>
-                  </div>
-                </td>
-                <td className="px-5 py-4 text-muted-foreground">{u.email}</td>
-                <td className="px-5 py-4">
-                  <span
-                    className={`rounded-full px-2.5 py-0.5 text-xs font-medium ${roleTint[u.role]}`}
+
+        {loading ? (
+          <div className="flex h-48 items-center justify-center">
+            <Loader2 className="h-6 w-6 animate-spin text-primary" />
+          </div>
+        ) : users.length === 0 ? (
+          <div className="py-12 text-center text-muted-foreground">
+            <Users className="mx-auto h-8 w-8 opacity-40 mb-2" />
+            <p className="font-medium text-foreground">No users found</p>
+            <p className="text-xs mt-1">
+              {search ? "Try adjusting your search criteria" : "No users registered yet"}
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-muted/40 text-xs uppercase tracking-wider text-muted-foreground">
+                <tr>
+                  <th className="px-5 py-3 text-left">User</th>
+                  <th className="px-5 py-3 text-left">Email</th>
+                  <th className="px-5 py-3 text-left">Role</th>
+                  <th className="px-5 py-3 text-left">Status</th>
+                  <th className="px-5 py-3 text-left">Joined</th>
+                  <th className="px-5 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {users.map((u, i) => (
+                  <motion.tr
+                    key={u.id}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    transition={{ delay: i * 0.03 }}
+                    className="border-t border-border transition hover:bg-muted/30"
                   >
-                    {u.role}
-                  </span>
-                </td>
-                <td className="px-5 py-4">
-                  <span className="inline-flex items-center gap-1.5 text-xs">
-                    <span
-                      className={`h-1.5 w-1.5 rounded-full ${u.status === "Active" ? "bg-primary" : "bg-destructive"}`}
-                    />
-                    {u.status}
-                  </span>
-                </td>
-                <td className="px-5 py-4 text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    {u.status === "Active" ? (
-                      <>
-                        {u.role === "Free" && (
+                    <td className="px-5 py-4">
+                      <div className="flex items-center gap-3">
+                        <div className="h-9 w-9 rounded-full bg-gradient-to-br from-sage to-primary flex items-center justify-center font-bold text-xs text-white">
+                          {(u.full_name || u.email || "U").slice(0, 2).toUpperCase()}
+                        </div>
+                        <div>
+                          <div className="font-medium">
+                            {u.full_name || "Unnamed User"}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Limit: {u.documents_limit || 20} docs
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-5 py-4 text-muted-foreground">{u.email}</td>
+                    <td className="px-5 py-4">
+                      <span
+                        className={`rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${
+                          roleTint[u.role] || roleTint.free
+                        }`}
+                      >
+                        {u.role}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4">
+                      <span className="inline-flex items-center gap-1.5 text-xs">
+                        <span
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            u.is_active ? "bg-primary" : "bg-destructive"
+                          }`}
+                        />
+                        {u.is_active ? "Active" : "Inactive"}
+                      </span>
+                    </td>
+                    <td className="px-5 py-4 text-xs text-muted-foreground">
+                      {new Date(u.created_at).toLocaleDateString(undefined, {
+                        year: "numeric",
+                        month: "short",
+                        day: "numeric",
+                      })}
+                    </td>
+                    <td className="px-5 py-4 text-right">
+                      <div className="flex items-center justify-end gap-2">
+                        {u.role === "free" ? (
                           <Button
                             size="sm"
                             variant="outline"
-                            className="rounded-full"
+                            className="rounded-full h-8 text-xs"
+                            disabled={actionLoading === u.id}
+                            onClick={() => handleRoleChange(u.id, "pro")}
                           >
-                            Upgrade to Pro
+                            <Crown className="mr-1 h-3.5 w-3.5 text-gold" /> Make Pro
                           </Button>
-                        )}
-                        <button className="text-xs font-medium text-destructive hover:underline">
-                          Ban User
-                        </button>
-                      </>
-                    ) : (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="rounded-full"
-                      >
-                        Unban User
-                      </Button>
-                    )}
-                    <button className="text-muted-foreground hover:text-foreground">
-                      <MoreVertical className="h-4 w-4" />
-                    </button>
-                  </div>
-                </td>
-              </motion.tr>
-            ))}
-          </tbody>
-        </table>
+                        ) : u.role === "pro" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="rounded-full h-8 text-xs"
+                            disabled={actionLoading === u.id}
+                            onClick={() => handleRoleChange(u.id, "free")}
+                          >
+                            Downgrade
+                          </Button>
+                        ) : null}
+
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-8 w-8 p-0 rounded-full text-destructive hover:bg-destructive/10"
+                          disabled={actionLoading === u.id}
+                          onClick={() => handleDeleteUser(u.id, u.email)}
+                          title="Delete User"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    </td>
+                  </motion.tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="surface-card p-5">
-          <h3 className="font-serif text-lg font-semibold">
-            Platform Integrity Notice
+          <h3 className="font-serif text-lg font-semibold flex items-center gap-2">
+            <ShieldAlert className="h-4 w-4 text-gold" /> System Permissions
           </h3>
           <p className="mt-1 text-sm text-muted-foreground">
-            Recent automated scans have flagged 34 accounts for suspicious
-            document query patterns. Review the{" "}
-            <a className="text-primary hover:underline" href="#">
-              Integrity Report
-            </a>{" "}
-            to take action before the next billing cycle.
+            All administrative actions are logged in MongoDB. Modifying user roles updates
+            storage limits and access privileges in real-time.
           </p>
         </div>
         <div className="surface-card p-5">
           <h3 className="font-serif text-lg font-semibold flex items-center gap-2">
-            <Eye className="h-4 w-4" /> Recent Activity
+            <UserCheck className="h-4 w-4 text-primary" /> Active Management
           </h3>
-          <ul className="mt-3 space-y-2 text-sm">
-            <li>
-              • <span className="font-medium">Admin</span> upgraded Elena Lopez
-              to Pro
-            </li>
-            <li>
-              • <span className="font-medium">System</span> banned David Black
-              (Policy Violation)
-            </li>
-          </ul>
+          <p className="mt-1 text-sm text-muted-foreground">
+            User document embeddings and conversation histories are strictly isolated. Deleting a user purges all associated documents and vector chunks.
+          </p>
         </div>
       </div>
     </div>
