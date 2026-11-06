@@ -92,6 +92,12 @@
 :root {
   --radius: 0.875rem;
 
+  /* Hero brand palette (DocuQuery dark green identity) */
+  --brand-primary: #23422f;
+  --brand-secondary: #3e6b52;
+  --brand-accent: #5d9a6a;
+  --brand-light: #f8faf7;
+
   /* Warm off-white background */
   --background: oklch(0.985 0.006 95);
   --foreground: oklch(0.22 0.02 150);
@@ -181,10 +187,7 @@
     -webkit-font-smoothing: antialiased;
   }
 
-  h1,
-  h2,
-  h3,
-  h4,
+  /* NOTE: do NOT override heading font-family here — let Tailwind utility classes control it */
   .font-serif {
     font-family: var(--font-serif);
     letter-spacing: -0.01em;
@@ -229,5 +232,62 @@
       transparent 1px
     );
     background-size: 24px 24px;
+  }
+
+  .text-gradient-brand {
+    background: linear-gradient(
+      135deg,
+      var(--brand-secondary),
+      var(--brand-accent)
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .bg-grid-soft {
+    background-image:
+      linear-gradient(to right, color-mix(in oklch, var(--brand-primary) 6%, transparent) 1px, transparent 1px),
+      linear-gradient(to bottom, color-mix(in oklch, var(--brand-primary) 6%, transparent) 1px, transparent 1px);
+    background-size: 56px 56px;
+  }
+
+  .bg-noise-fine {
+    background-image: radial-gradient(
+      color-mix(in oklch, var(--brand-primary) 12%, transparent) 0.6px,
+      transparent 0.6px
+    );
+    background-size: 3px 3px;
+  }
+
+  .glass-panel {
+    background: color-mix(in oklch, var(--brand-light) 70%, transparent);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid color-mix(in oklch, var(--brand-primary) 10%, transparent);
+  }
+
+  @keyframes float-slow {
+    0%, 100% { transform: translateY(0) translateX(0); }
+    50% { transform: translateY(-14px) translateX(4px); }
+  }
+  .animate-float-slow {
+    animation: float-slow 7s ease-in-out infinite;
+  }
+
+  @keyframes blob-drift {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(3%, -4%) scale(1.05); }
+    66% { transform: translate(-3%, 3%) scale(0.97); }
+  }
+  .animate-blob-drift {
+    animation: blob-drift 18s ease-in-out infinite;
+  }
+
+  @keyframes dash-flow {
+    to { stroke-dashoffset: -200; }
+  }
+  .animate-dash-flow {
+    animation: dash-flow 8s linear infinite;
   }
 }

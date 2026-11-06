@@ -2,29 +2,24 @@ export const userNav = [
   { to: "/dashboard", label: "Dashboard", icon: "LayoutDashboard" },
   { to: "/documents", label: "Documents", icon: "FileText" },
   { to: "/ai-query", label: "AI Query", icon: "Zap" },
-  { to: "/careers", label: "Internships", icon: "Briefcase" },
-  { to: "/content", label: "Content", icon: "BookOpen" },
-  { to: "/analytics", label: "Analytics", icon: "BarChart3" },
   { to: "/search", label: "Search", icon: "Search" },
+  { to: "/analytics", label: "Analytics", icon: "BarChart3" },
   { to: "/profile", label: "Profile", icon: "User" },
 ] as const;
 
 export const adminNav = [
   { to: "/admin", label: "Overview", icon: "LayoutDashboard" },
-  { to: "/admin/internships", label: "Internships/Jobs", icon: "Briefcase" },
-  { to: "/admin/news", label: "News", icon: "Newspaper" },
   { to: "/admin/users", label: "Users", icon: "Users" },
   { to: "/admin/analytics", label: "Analytics", icon: "BarChart3" },
   { to: "/admin/reports", label: "Reports", icon: "Flag" },
-  { to: "/admin/categories", label: "Categories", icon: "Tags" },
-  { to: "/admin/settings", label: "Settings", icon: "Settings" },
 ] as const;
 
 export const topNav = [
   { to: "/dashboard", label: "Dashboard" },
   { to: "/documents", label: "Documents" },
   { to: "/ai-query", label: "AI Query" },
-  { to: "/careers", label: "Careers" },
+  { to: "/search", label: "Search" },
+  { to: "/analytics", label: "Analytics" },
 ];
 
 export const recentDocs = [
