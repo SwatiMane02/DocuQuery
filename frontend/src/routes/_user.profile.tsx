@@ -353,13 +353,13 @@ function Profile() {
             style={{ marginBottom: "26px" }}
           />
 
-          <form onSubmit={handleSaveProfile} className="flex flex-col" style={{ gap: "28px" }}>
+          <form onSubmit={handleSaveProfile} className="flex flex-col" style={{ gap: "32px" }}>
             {/* Field: Full Name */}
             <div>
               <label
                 htmlFor="fullName"
                 className="text-xs sm:text-[13px] font-semibold text-[#EDE7DC] uppercase tracking-wider"
-                style={{ marginBottom: "14px", display: "block" }}
+                style={{ marginBottom: "20px", display: "block" }}
               >
                 Full Name <span className="text-[#E8913C]">*</span>
               </label>
@@ -376,7 +376,7 @@ function Profile() {
 
             {/* Field: Email Address (Read-only) */}
             <div>
-              <div className="flex items-center justify-between" style={{ marginBottom: "14px" }}>
+              <div className="flex items-center justify-between" style={{ marginBottom: "20px" }}>
                 <label
                   htmlFor="emailAddress"
                   className="block text-xs sm:text-[13px] font-semibold text-[#EDE7DC] uppercase tracking-wider"
@@ -394,7 +394,7 @@ function Profile() {
                 disabled
                 className="h-[48px] w-full rounded-xl bg-[#080B0D] border border-[rgba(237,231,220,0.08)] text-[#9EA5A8] text-sm px-4 cursor-not-allowed select-none box-border font-mono"
               />
-              <p className="text-[11.5px] text-[#6C7378] mt-2.5">
+              <p className="text-[11.5px] text-[#6C7378] mt-3">
                 Your email address is tied to your login identity and cannot be altered directly.
               </p>
             </div>
@@ -404,7 +404,7 @@ function Profile() {
               <label
                 htmlFor="bio"
                 className="text-xs sm:text-[13px] font-semibold text-[#EDE7DC] uppercase tracking-wider"
-                style={{ marginBottom: "14px", display: "block" }}
+                style={{ marginBottom: "20px", display: "block" }}
               >
                 Biography
               </label>
@@ -416,7 +416,7 @@ function Profile() {
                 placeholder="Tell us about your research focus, projects, or organization..."
                 className="w-full rounded-xl bg-[#171D21] border border-[rgba(237,231,220,0.14)] text-[#EDE7DC] placeholder-[#6C7378] text-sm p-4 focus:outline-none focus:border-[#E8913C] focus:ring-1 focus:ring-[#E8913C]/40 transition-all resize-y min-h-[135px] box-border leading-relaxed"
               />
-              <p className="text-[11.5px] text-[#6C7378] mt-2.5">
+              <p className="text-[11.5px] text-[#6C7378] mt-3">
                 Brief description displayed alongside your generated research summaries.
               </p>
             </div>
@@ -608,13 +608,13 @@ function Profile() {
               style={{ marginBottom: "26px" }}
             />
 
-            <form onSubmit={handleChangePassword} className="flex flex-col" style={{ gap: "24px" }}>
+            <form onSubmit={handleChangePassword} className="flex flex-col" style={{ gap: "28px" }}>
               {/* Field: Current Password */}
               <div>
                 <label
                   htmlFor="currentPassword"
                   className="text-xs font-semibold text-[#EDE7DC] uppercase tracking-wider"
-                  style={{ marginBottom: "14px", display: "block" }}
+                  style={{ marginBottom: "20px", display: "block" }}
                 >
                   Current Password <span className="text-[#E8913C]">*</span>
                 </label>
@@ -625,7 +625,7 @@ function Profile() {
                     value={currentPassword}
                     onChange={(e) => setCurrentPassword(e.target.value)}
                     placeholder="Enter current password"
-                    className="h-[46px] w-full rounded-xl bg-[#171D21] border border-[rgba(237,231,220,0.14)] text-[#EDE7DC] placeholder-[#6C7378] text-xs px-4 pr-11 focus:outline-none focus:border-[#E8913C] focus:ring-1 focus:ring-[#E8913C]/40 transition-all box-border"
+                    className="h-[48px] w-full rounded-xl bg-[#171D21] border border-[rgba(237,231,220,0.14)] text-[#EDE7DC] placeholder-[#6C7378] text-xs px-4 pr-11 focus:outline-none focus:border-[#E8913C] focus:ring-1 focus:ring-[#E8913C]/40 transition-all box-border"
                     required
                   />
                   <button
@@ -648,7 +648,7 @@ function Profile() {
                 <label
                   htmlFor="newPassword"
                   className="text-xs font-semibold text-[#EDE7DC] uppercase tracking-wider"
-                  style={{ marginBottom: "14px", display: "block" }}
+                  style={{ marginBottom: "20px", display: "block" }}
                 >
                   New Password <span className="text-[#E8913C]">*</span>
                 </label>
@@ -659,7 +659,7 @@ function Profile() {
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
                     placeholder="Minimum 8 characters"
-                    className="h-[46px] w-full rounded-xl bg-[#171D21] border border-[rgba(237,231,220,0.14)] text-[#EDE7DC] placeholder-[#6C7378] text-xs px-4 pr-11 focus:outline-none focus:border-[#E8913C] focus:ring-1 focus:ring-[#E8913C]/40 transition-all box-border"
+                    className="h-[48px] w-full rounded-xl bg-[#171D21] border border-[rgba(237,231,220,0.14)] text-[#EDE7DC] placeholder-[#6C7378] text-xs px-4 pr-11 focus:outline-none focus:border-[#E8913C] focus:ring-1 focus:ring-[#E8913C]/40 transition-all box-border"
                     required
                   />
                   <button
@@ -675,7 +675,7 @@ function Profile() {
                     )}
                   </button>
                 </div>
-                <p className="text-[11px] text-[#6C7378] mt-2">
+                <p className="text-[11px] text-[#6C7378] mt-2.5">
                   Must be at least 8 characters long.
                 </p>
               </div>
@@ -685,7 +685,7 @@ function Profile() {
                 <label
                   htmlFor="confirmPassword"
                   className="text-xs font-semibold text-[#EDE7DC] uppercase tracking-wider"
-                  style={{ marginBottom: "14px", display: "block" }}
+                  style={{ marginBottom: "20px", display: "block" }}
                 >
                   Confirm New Password <span className="text-[#E8913C]">*</span>
                 </label>
@@ -696,7 +696,7 @@ function Profile() {
                     value={confirmPassword}
                     onChange={(e) => setConfirmPassword(e.target.value)}
                     placeholder="Re-enter new password"
-                    className={`h-[44px] w-full rounded-xl bg-[#171D21] border text-[#EDE7DC] placeholder-[#6C7378] text-xs px-4 pr-11 focus:outline-none transition-all box-border ${
+                    className={`h-[48px] w-full rounded-xl bg-[#171D21] border text-[#EDE7DC] placeholder-[#6C7378] text-xs px-4 pr-11 focus:outline-none transition-all box-border ${
                       passwordsMismatch
                         ? "border-[#E5484D] focus:border-[#E5484D] focus:ring-1 focus:ring-[#E5484D]/40"
                         : passwordsMatch
@@ -720,12 +720,12 @@ function Profile() {
                 </div>
 
                 {passwordsMatch && (
-                  <p className="text-[11px] text-[#35B88A] mt-2 flex items-center gap-1.5 font-medium">
+                  <p className="text-[11px] text-[#35B88A] mt-2.5 flex items-center gap-1.5 font-medium">
                     <CheckCircle2 className="h-3.5 w-3.5" /> Passwords match
                   </p>
                 )}
                 {passwordsMismatch && (
-                  <p className="text-[11px] text-[#E5484D] mt-2 flex items-center gap-1.5 font-medium">
+                  <p className="text-[11px] text-[#E5484D] mt-2.5 flex items-center gap-1.5 font-medium">
                     <AlertCircle className="h-3.5 w-3.5" /> Passwords do not match
                   </p>
                 )}
