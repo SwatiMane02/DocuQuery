@@ -1,6 +1,5 @@
+import { apiClient, API_BASE_URL } from "@/lib/api";
 import { authStore } from "@/store/authStore";
-
-const BASE_URL = "http://localhost:8000";
 
 // ============================================================================
 // RESPONSE TYPES
@@ -55,6 +54,8 @@ export interface ChatSourceMetadata {
   document_id: string;
   chunk_index: number;
   score: number;
+  content?: string | null;
+  document_name?: string | null;
 }
 
 export interface ChatResponse {
@@ -70,47 +71,6 @@ export interface ChatResponse {
 // ============================================================================
 
 export class DocumentService {
-  /**
-   * Helper to perform fetch requests with error handling and auth.
-   * Automatically injects Bearer token and handles FormData.
-   */
-  private static async request<T>(
-    endpoint: string,
-    options: RequestInit = {},
-  ): Promise<T> {
-    const url = `${BASE_URL}${endpoint}`;
-
-    // Set headers - don't override Content-Type for FormData
-    const headers = new Headers(options.headers || {});
-    if (!headers.has("Content-Type") && !(options.body instanceof FormData)) {
-      headers.set("Content-Type", "application/json");
-    }
-
-    // Add authorization header if token exists
-    const token = authStore.getToken();
-    if (token && !headers.has("Authorization")) {
-      headers.set("Authorization", `Bearer ${token}`);
-    }
-
-    const response = await fetch(url, {
-      ...options,
-      headers,
-    });
-
-    if (!response.ok) {
-      let errorMessage = "An error occurred";
-      try {
-        const errorData = await response.json();
-        errorMessage = errorData.detail || errorMessage;
-      } catch {
-        errorMessage = response.statusText || errorMessage;
-      }
-      throw new Error(errorMessage);
-    }
-
-    return response.json() as Promise<T>;
-  }
-
   /**
    * Upload a document file.
    *
@@ -164,11 +124,11 @@ export class DocumentService {
 
         // Handle errors
         xhr.addEventListener("error", () => {
-          reject(new Error("Upload request failed"));
+          reject(new Error("Upload request failed. Please check your network connection."));
         });
 
         // Configure and send request
-        xhr.open("POST", `${BASE_URL}/documents/upload`);
+        xhr.open("POST", `${API_BASE_URL}/documents/upload`);
         if (token) {
           xhr.setRequestHeader("Authorization", `Bearer ${token}`);
         }
@@ -176,8 +136,8 @@ export class DocumentService {
       });
     }
 
-    // Without progress tracking, use standard fetch
-    return this.request<UploadResponse>("/documents/upload", {
+    // Without progress tracking, use apiClient
+    return apiClient<UploadResponse>("/documents/upload", {
       method: "POST",
       body: formData,
     });
@@ -200,7 +160,7 @@ export class DocumentService {
       limit: limit.toString(),
     });
 
-    const rawResponse = await this.request<any>(
+    const rawResponse = await apiClient<any>(
       `/documents?${params.toString()}`,
       { method: "GET" },
     );
@@ -242,17 +202,45 @@ export class DocumentService {
   static async deleteDocument(
     documentId: string,
   ): Promise<{ message: string }> {
-    return this.request<{ message: string }>(`/documents/${documentId}`, {
+    return apiClient<{ message: string }>(`/documents/${documentId}`, {
       method: "DELETE",
     });
   }
 
   /**
+   * Download original document file.
+   */
+  static getDownloadUrl(documentId: string): string {
+    const token = authStore.getToken();
+    return `${API_BASE_URL}/documents/${documentId}/download${token ? `?token=${token}` : ""}`;
+  }
+
+  static async downloadDocument(documentId: string, filename: string): Promise<void> {
+    const token = authStore.getToken();
+    const response = await fetch(`${API_BASE_URL}/documents/${documentId}/download`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!response.ok) {
+      let msg = "Failed to download file";
+      try {
+        const data = await response.json();
+        msg = data.detail || msg;
+      } catch {}
+      throw new Error(msg);
+    }
+    const blob = await response.blob();
+    const downloadUrl = window.URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = downloadUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(downloadUrl);
+  }
+
+  /**
    * Generate embeddings for a document's chunks.
-   *
-   * This is required before using the document for RAG search/chat.
-   * In production, this would be auto-triggered after chunking.
-   * For now, it's a manual step to enable end-to-end testing.
    *
    * @param documentId - The ID of the document
    * @returns Embedding generation confirmation
@@ -261,7 +249,7 @@ export class DocumentService {
   static async generateEmbeddings(
     documentId: string,
   ): Promise<EmbeddingResponse> {
-    return this.request<EmbeddingResponse>(
+    return apiClient<EmbeddingResponse>(
       `/documents/${documentId}/generate-embeddings`,
       { method: "POST" },
     );
@@ -270,11 +258,8 @@ export class DocumentService {
   /**
    * Perform semantic search across all documents.
    *
-   * Uses embeddings to find semantically similar chunks to the query.
-   * Returns top-k most relevant chunks ranked by cosine similarity.
-   *
    * @param query - The search query
-   * @param topK - Number of top results to return (default 5)
+   * @param documentId - Optional document ID filter
    * @param topK - Number of top results to return (default 10)
    * @returns Search results with matched chunks
    * @throws Error if search fails
@@ -284,7 +269,7 @@ export class DocumentService {
     documentId?: string,
     topK: number = 10,
   ): Promise<SearchResponse> {
-    return this.request<SearchResponse>(`/documents/search?top_k=${topK}`, {
+    return apiClient<SearchResponse>(`/documents/search?top_k=${topK}`, {
       method: "POST",
       body: JSON.stringify({ query, document_id: documentId }),
     });
@@ -292,17 +277,6 @@ export class DocumentService {
 
   /**
    * RAG Chat - Answer questions using document context.
-   *
-   * Complete RAG pipeline:
-   * 1. Convert query to embedding
-   * 2. Retrieve relevant chunks via semantic similarity
-   * 3. Build context-aware prompt
-   * 4. Generate answer using local Ollama LLM
-   * 5. Return answer with source citations
-   *
-   * Requires:
-   * - Documents uploaded and embeddings generated
-   * - Ollama running locally (ollama run mistral)
    *
    * @param query - The question to answer
    * @param documentId - Optional document ID to restrict chat context
@@ -315,9 +289,10 @@ export class DocumentService {
     documentId?: string,
     topK: number = 10,
   ): Promise<ChatResponse> {
-    return this.request<ChatResponse>(`/documents/chat?top_k=${topK}`, {
+    return apiClient<ChatResponse>(`/documents/chat?top_k=${topK}`, {
       method: "POST",
       body: JSON.stringify({ query, document_id: documentId }),
     });
   }
 }
+

@@ -1,12 +1,11 @@
-import { authStore } from "@/store/authStore";
-
-const BASE_URL = "http://localhost:8000";
+import { apiClient } from "@/lib/api";
 
 export interface UserResponse {
   _id?: string;
   id?: string;
   email: string;
   full_name: string;
+  bio?: string | null;
   role: string;
   documents_limit: number;
   is_active: boolean;
@@ -20,55 +19,14 @@ export interface TokenResponse {
 
 export class AuthService {
   /**
-   * Helper to perform fetch requests with error handling.
-   */
-  private static async request<T>(
-    endpoint: string,
-    options: RequestInit = {},
-  ): Promise<T> {
-    const url = `${BASE_URL}${endpoint}`;
-
-    // Set headers
-    const headers = new Headers(options.headers || {});
-    if (!headers.has("Content-Type") && !(options.body instanceof FormData)) {
-      headers.set("Content-Type", "application/json");
-    }
-
-    // Add authorization header if token exists
-    const token = authStore.getToken();
-    if (token && !headers.has("Authorization")) {
-      headers.set("Authorization", `Bearer ${token}`);
-    }
-
-    const response = await fetch(url, {
-      ...options,
-      headers,
-    });
-
-    if (!response.ok) {
-      let errorMessage = "An error occurred";
-      try {
-        const errorData = await response.json();
-        errorMessage = errorData.detail || errorMessage;
-      } catch {
-        errorMessage = response.statusText || errorMessage;
-      }
-      throw new Error(errorMessage);
-    }
-
-    return response.json() as Promise<T>;
-  }
-
-  /**
    * Register a new user account.
-   * Maps `name` input to `full_name` required by backend.
    */
   static async signup(
     name: string,
     email: string,
     password: string,
   ): Promise<TokenResponse> {
-    return this.request<TokenResponse>("/auth/register", {
+    return apiClient<TokenResponse>("/auth/register", {
       method: "POST",
       body: JSON.stringify({
         email,
@@ -82,7 +40,7 @@ export class AuthService {
    * Authenticate user credentials and retrieve a JWT token.
    */
   static async login(email: string, password: string): Promise<TokenResponse> {
-    return this.request<TokenResponse>("/auth/login", {
+    return apiClient<TokenResponse>("/auth/login", {
       method: "POST",
       body: JSON.stringify({
         email,
@@ -95,8 +53,37 @@ export class AuthService {
    * Fetch current user profile.
    */
   static async getProfile(): Promise<UserResponse> {
-    return this.request<UserResponse>("/auth/me", {
+    return apiClient<UserResponse>("/auth/me", {
       method: "GET",
+    });
+  }
+
+  /**
+   * Update user profile (full name, bio).
+   */
+  static async updateProfile(data: {
+    full_name?: string;
+    bio?: string;
+  }): Promise<UserResponse> {
+    return apiClient<UserResponse>("/auth/me", {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  /**
+   * Change user password.
+   */
+  static async changePassword(
+    current_password: string,
+    new_password: string,
+  ): Promise<{ message: string }> {
+    return apiClient<{ message: string }>("/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify({
+        current_password,
+        new_password,
+      }),
     });
   }
 }

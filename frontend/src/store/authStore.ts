@@ -1,7 +1,9 @@
 import { useState, useEffect } from "react";
+import { UserResponse } from "@/services/authService";
 
 type Listener = (isAuthenticated: boolean) => void;
 let listeners: Listener[] = [];
+let currentUser: UserResponse | null = null;
 
 export const authStore = {
   /**
@@ -16,22 +18,38 @@ export const authStore = {
    */
   setToken(token: string): void {
     localStorage.setItem("access_token", token);
-    listeners.forEach((listener) => listener(true));
+    listeners.forEach((listener) => listener(this.isAuthenticated()));
   },
 
   /**
-   * Clears the access token from localStorage and notifies all subscribers.
+   * Sets the current user object in-memory and notifies subscribers.
+   */
+  setUser(user: UserResponse): void {
+    currentUser = user;
+    listeners.forEach((listener) => listener(this.isAuthenticated()));
+  },
+
+  /**
+   * Retrieves the current user object.
+   */
+  getUser(): UserResponse | null {
+    return currentUser;
+  },
+
+  /**
+   * Clears the access token from localStorage, clears user, and notifies all subscribers.
    */
   logout(): void {
     localStorage.removeItem("access_token");
+    currentUser = null;
     listeners.forEach((listener) => listener(false));
   },
 
   /**
-   * Checks if the user is currently authenticated (token exists).
+   * Checks if the user is currently authenticated (token exists and user loaded).
    */
   isAuthenticated(): boolean {
-    return !!this.getToken();
+    return !!this.getToken() && !!currentUser;
   },
 
   /**
@@ -68,6 +86,8 @@ export function useAuth() {
   return {
     isAuthenticated,
     getToken: authStore.getToken,
+    getUser: authStore.getUser,
     logout: () => authStore.logout(),
   };
 }
+
