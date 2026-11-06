@@ -456,13 +456,18 @@ class ChatSourceMetadata(BaseModel):
     document_id: str = Field(..., description="Source document ID")
     chunk_index: int = Field(..., ge=0, description="Chunk index in document")
     score: float = Field(..., ge=0.0, le=1.0, description="Similarity score")
+    content: Optional[str] = Field(default=None, description="Source chunk text content")
+    document_name: Optional[str] = Field(default=None, description="Source document filename")
     
     class Config:
+        populate_by_name = True
         json_schema_extra = {
             "example": {
                 "document_id": "507f1f77bcf86cd799439011",
                 "chunk_index": 2,
-                "score": 0.91
+                "score": 0.91,
+                "content": "Sample chunk content snippet...",
+                "document_name": "Sample.pdf"
             }
         }
 

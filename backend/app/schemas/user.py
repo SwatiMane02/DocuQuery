@@ -148,49 +148,35 @@ class UserLogin(BaseModel):
 # RESPONSE SCHEMAS (What server sends to clients)
 # ============================================================================
 
+class UserUpdate(BaseModel):
+    """Schema for updating user profile."""
+    full_name: Optional[str] = Field(None, min_length=1, max_length=100, description="Updated full name")
+    bio: Optional[str] = Field(None, max_length=500, description="Updated biography")
+
+
+class PasswordChangeRequest(BaseModel):
+    """Schema for changing password."""
+    current_password: str = Field(..., description="Current password")
+    new_password: str = Field(..., min_length=8, max_length=72, description="New password")
+
+
 class UserResponse(BaseModel):
     """
     Schema for user profile responses.
     
     Sent to clients in responses to registration and GET /auth/me requests.
-    
-    Important Security Decision:
-    - hashed_password is NEVER included in responses
-    - Clients don't need to see password hash
-    - Exposing hashes would be a security risk
-    - is_active tells client if account is active
-    
-    Response example:
-    {
-        "id": "507f1f77bcf86cd799439011",
-        "email": "john@example.com",
-        "full_name": "John Doe",
-        "role": "free",
-        "documents_limit": 10,
-        "is_active": true,
-        "created_at": "2024-05-24T10:30:00Z"
-    }
-    
-    Attributes:
-        id: MongoDB ObjectId (shown to client for reference)
-        email: Email address
-        full_name: User display name
-        role: User tier ("free" or "pro")
-        documents_limit: Max documents for this account
-        is_active: Whether account is active
-        created_at: When account was created
     """
-    
     id: Optional[str] = Field(None, alias="_id", description="User ID")
     email: EmailStr = Field(..., description="User email")
     full_name: str = Field(..., description="User full name")
+    bio: Optional[str] = Field(default=None, description="User biography")
     role: str = Field(..., description="User role (free/pro)")
     documents_limit: int = Field(..., description="Document upload limit")
     is_active: bool = Field(..., description="Whether account is active")
     created_at: datetime = Field(..., description="Account creation time")
     
     class Config:
-        populate_by_name = True  # Allow both "id" and "_id"
+        populate_by_name = True
         json_schema_extra = {
             "example": {
                 "_id": "507f1f77bcf86cd799439011",
