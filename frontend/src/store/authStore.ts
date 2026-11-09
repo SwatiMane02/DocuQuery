@@ -3,7 +3,17 @@ import { UserResponse } from "@/services/authService";
 
 type Listener = (isAuthenticated: boolean) => void;
 let listeners: Listener[] = [];
-let currentUser: UserResponse | null = null;
+
+function getStoredUser(): UserResponse | null {
+  try {
+    const raw = localStorage.getItem("user_profile");
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+}
+
+let currentUser: UserResponse | null = getStoredUser();
 
 export const authStore = {
   /**
@@ -22,10 +32,15 @@ export const authStore = {
   },
 
   /**
-   * Sets the current user object in-memory and notifies subscribers.
+   * Sets the current user object in-memory and in localStorage, and notifies subscribers.
    */
   setUser(user: UserResponse): void {
     currentUser = user;
+    try {
+      localStorage.setItem("user_profile", JSON.stringify(user));
+    } catch {
+      // ignore
+    }
     listeners.forEach((listener) => listener(this.isAuthenticated()));
   },
 
@@ -41,6 +56,7 @@ export const authStore = {
    */
   logout(): void {
     localStorage.removeItem("access_token");
+    localStorage.removeItem("user_profile");
     currentUser = null;
     listeners.forEach((listener) => listener(false));
   },

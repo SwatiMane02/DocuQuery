@@ -85,6 +85,14 @@ class UserCreate(BaseModel):
         description="User full name"
     )
     
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        """Strip whitespace and lowercase email before validation."""
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
+
     @field_validator('password')
     @classmethod
     def validate_password_bytes(cls, v: str) -> str:
@@ -134,6 +142,14 @@ class UserLogin(BaseModel):
     
     email: EmailStr = Field(..., description="Email address")
     password: str = Field(..., description="Plain-text password")
+    
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, v: str) -> str:
+        """Strip whitespace and lowercase email before validation."""
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
     
     class Config:
         json_schema_extra = {

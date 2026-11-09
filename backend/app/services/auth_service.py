@@ -26,6 +26,9 @@ Error Handling Strategy:
 """
 
 from datetime import timedelta
+import logging
+import re
+import time
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -34,11 +37,24 @@ from app.core.security import (
     create_access_token,
     decode_access_token,
     hash_password,
+    hash_password_async,
     verify_password,
+    verify_password_async,
 )
 from app.db.database import get_database
 from app.models.user import User
 from app.schemas.user import TokenData, UserCreate, UserLogin
+
+logger = logging.getLogger("app.auth")
+
+
+def mask_email(email: str) -> str:
+    """Mask email for safe diagnostic logging without leaking user PII."""
+    if not email or "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    masked_local = local[0] + "***" if len(local) > 1 else "***"
+    return f"{masked_local}@{domain}"
 
 
 class AuthService:
@@ -85,53 +101,33 @@ class AuthService:
         Register a new user.
         
         Process:
-        1. Check if email already exists (prevent duplicates)
-        2. Hash the password using bcrypt
-        3. Create User document in MongoDB
-        4. Return created user
-        
-        Error Handling:
-        - Raises ValueError if email already exists
-        - MongoDB errors propagate (connection failures, etc.)
-        
-        Database Operation:
-        This inserts a document into the users collection:
-        {
-            "email": "john@example.com",
-            "full_name": "John Doe",
-            "hashed_password": "$2b$12$...",
-            "role": "free",
-            "documents_limit": 10,
-            "is_active": true,
-            "created_at": "2024-05-24T10:30:00Z",
-            "updated_at": "2024-05-24T10:30:00Z"
-        }
-        
-        Args:
-            user_create: UserCreate schema with email, password, full_name
-            
-        Returns:
-            Created User object
-            
-        Raises:
-            ValueError: If email already exists in database
+        1. Normalize email (strip and lowercase)
+        2. Check if email already exists (case-insensitively to prevent duplicates)
+        3. Hash the password using bcrypt in worker thread
+        4. Create User document in MongoDB
+        5. Return created user
         """
+        start_time = time.perf_counter()
+        clean_email = user_create.email.strip().lower()
+        masked = mask_email(clean_email)
+        
         users_collection = await AuthService._get_users_collection()
         
-        # Check if user with this email already exists
-        # db.users.findOne({ email: "john@example.com" })
-        existing_user = await users_collection.find_one({"email": user_create.email})
+        # Check if user with this email already exists (case-insensitive check)
+        existing_user = await users_collection.find_one(
+            {"email": {"$regex": f"^{re.escape(clean_email)}$", "$options": "i"}}
+        )
         if existing_user:
+            logger.info("Registration rejected: email %s already registered", masked)
             raise ValueError("Email already registered")
         
-        # Hash the plain-text password
-        # This is CRITICAL security step: never store plain passwords
-        hashed_password = hash_password(user_create.password)
+        # Hash the plain-text password off the event loop
+        hashed_password = await hash_password_async(user_create.password)
         
-        # Create User document (ready for MongoDB)
+        # Create User document with normalized email
         user = User(
-            email=user_create.email,
-            full_name=user_create.full_name,
+            email=clean_email,
+            full_name=user_create.full_name.strip(),
             hashed_password=hashed_password,
             role="free",           # New users start with free tier
             documents_limit=10,    # Free tier: 10 documents
@@ -139,112 +135,105 @@ class AuthService:
         )
         
         # Insert document into MongoDB
-        # MongoDB automatically generates _id field
         result = await users_collection.insert_one(user.model_dump(by_alias=True, exclude_none=True))
-        
-        # Set the MongoDB-generated _id on the user object
         user.id = str(result.inserted_id)
         
+        duration = time.perf_counter() - start_time
+        logger.info("Registration successful for %s (total: %.3fs)", masked, duration)
         return user
     
     @staticmethod
-    async def authenticate_user(user_login: UserLogin) -> str:
+    async def authenticate_user(user_login: UserLogin) -> str | None:
         """
         Authenticate user and return JWT access token.
         
         Authentication Process:
-        1. Find user by email in database
-        2. Verify password matches stored hash
-        3. Create JWT token containing user info
-        4. Return token
-        
-        Error Handling:
-        - Returns None if email not found
-        - Returns None if password doesn't match
-        - This lets route handler return generic "Invalid credentials" message
-          (don't reveal whether email exists for security)
-        
-        Why verify_password?
-        User sends: "MySecurePassword123!"
-        Database has: "$2b$12$abcdef..." (bcrypt hash)
-        bcrypt.verify() applies same algorithm to sent password and compares
-        
-        JWT Token Contains:
-        {
-            "sub": "john@example.com",      # User identifier
-            "email": "john@example.com",    # Additional info
-            "exp": 1234567890               # Expiration time
-        }
-        
-        Args:
-            user_login: UserLogin schema with email and password
-            
-        Returns:
-            JWT access token string if credentials valid
-            None if email not found or password incorrect
+        1. Normalize email (strip and lowercase)
+        2. Find user by email in database (direct match with case-insensitive fallback)
+        3. Verify password matches stored hash off the event loop
+        4. Check account is active
+        5. Create and return JWT access token
         """
+        start_time = time.perf_counter()
+        clean_email = user_login.email.strip().lower()
+        masked = mask_email(clean_email)
+        
         users_collection = await AuthService._get_users_collection()
         
-        # Find user by email
-        # db.users.findOne({ email: "john@example.com" })
-        user_doc = await users_collection.find_one({"email": user_login.email})
-        
-        # User not found
+        # 1. User lookup: try direct match first (uses unique index), fallback to case-insensitive
+        lookup_start = time.perf_counter()
+        user_doc = await users_collection.find_one({"email": clean_email})
         if not user_doc:
+            user_doc = await users_collection.find_one(
+                {"email": {"$regex": f"^{re.escape(clean_email)}$", "$options": "i"}}
+            )
+        lookup_duration = time.perf_counter() - lookup_start
+        
+        if not user_doc:
+            total_duration = time.perf_counter() - start_time
+            logger.warning(
+                "Authentication failed: user not found for %s (lookup: %.3fs, total: %.3fs)",
+                masked, lookup_duration, total_duration
+            )
             return None
         
         # Convert MongoDB document to User object
-        # Field validator in User model handles ObjectId → string conversion
         user = User(**user_doc)
         
-        # Verify password
-        # Compares: hash(provided_password) with stored_hash
-        if not verify_password(user_login.password, user.hashed_password):
-            # Password doesn't match
+        # 2. Check active status
+        if not user.is_active:
+            total_duration = time.perf_counter() - start_time
+            logger.warning(
+                "Authentication failed: account is inactive for %s (total: %.3fs)",
+                masked, total_duration
+            )
             return None
         
-        # Create JWT token
-        # Token expires in ACCESS_TOKEN_EXPIRE_MINUTES (from settings)
+        # 3. Verify password in background thread to avoid event loop blocking
+        verify_start = time.perf_counter()
+        is_valid = await verify_password_async(user_login.password, user.hashed_password)
+        verify_duration = time.perf_counter() - verify_start
+        
+        if not is_valid:
+            total_duration = time.perf_counter() - start_time
+            logger.warning(
+                "Authentication failed: password mismatch for %s (verify: %.3fs, total: %.3fs)",
+                masked, verify_duration, total_duration
+            )
+            return None
+        
+        # 4. Create JWT token
         token_data = {
-            "sub": user.email,      # Subject = user's email
-            "email": user.email     # Also include email in payload
+            "sub": user.email,
+            "email": user.email
         }
+        access_token = create_access_token(data=token_data)
         
-        access_token = create_access_token(
-            data=token_data,
-            # If not provided, uses ACCESS_TOKEN_EXPIRE_MINUTES from settings
+        total_duration = time.perf_counter() - start_time
+        logger.info(
+            "Authentication successful for %s (lookup: %.3fs, verify: %.3fs, total: %.3fs)",
+            masked, lookup_duration, verify_duration, total_duration
         )
-        
         return access_token
     
     @staticmethod
     async def get_user_by_email(email: str) -> User | None:
         """
         Get user from database by email address.
-        
-        Used to:
-        - Verify email exists during login
-        - Look up user after token decoding
-        - Check email availability during registration
-        
-        Database Query:
-        db.users.findOne({ email: "john@example.com" })
-        
-        Args:
-            email: Email address to search for
-            
-        Returns:
-            User object if found, None otherwise
+        Supports both normalized lowercase and existing legacy mixed-case accounts.
         """
+        clean_email = email.strip().lower()
         users_collection = await AuthService._get_users_collection()
         
-        user_doc = await users_collection.find_one({"email": email})
+        user_doc = await users_collection.find_one({"email": clean_email})
+        if not user_doc:
+            user_doc = await users_collection.find_one(
+                {"email": {"$regex": f"^{re.escape(clean_email)}$", "$options": "i"}}
+            )
         
         if not user_doc:
             return None
         
-        # Field validator in User model handles ObjectId → string conversion
-        # No need for manual conversion here
         return User(**user_doc)
     
     @staticmethod
@@ -337,10 +326,10 @@ class AuthService:
             return False
 
         user = User(**user_doc)
-        if not verify_password(current_password, user.hashed_password):
+        if not await verify_password_async(current_password, user.hashed_password):
             return False
 
-        new_hashed = hash_password(new_password)
+        new_hashed = await hash_password_async(new_password)
         await users_collection.update_one(
             {"_id": ObjectId(user_id)},
             {"$set": {"hashed_password": new_hashed, "updated_at": datetime.utcnow()}}

@@ -83,6 +83,15 @@ def hash_password(password: str) -> str:
     return pwd_context.hash(password)
 
 
+async def hash_password_async(password: str) -> str:
+    """
+    Hash a plain-text password using bcrypt off the event loop.
+    Prevents CPU-bound bcrypt hashing from blocking asyncio operations.
+    """
+    import anyio
+    return await anyio.to_thread.run_sync(hash_password, password)
+
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """
     Verify a plain-text password against its bcrypt hash.
@@ -112,6 +121,15 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
         True if password is correct, False otherwise
     """
     return pwd_context.verify(plain_password, hashed_password)
+
+
+async def verify_password_async(plain_password: str, hashed_password: str) -> bool:
+    """
+    Verify a plain-text password against its bcrypt hash off the event loop.
+    Prevents CPU-bound bcrypt verification from blocking asyncio operations.
+    """
+    import anyio
+    return await anyio.to_thread.run_sync(verify_password, plain_password, hashed_password)
 
 
 # ============================================================================

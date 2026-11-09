@@ -29,9 +29,9 @@ export class AuthService {
     return apiClient<TokenResponse>("/auth/register", {
       method: "POST",
       body: JSON.stringify({
-        email,
+        email: email.trim().toLowerCase(),
         password,
-        full_name: name,
+        full_name: name.trim(),
       }),
     });
   }
@@ -43,7 +43,7 @@ export class AuthService {
     return apiClient<TokenResponse>("/auth/login", {
       method: "POST",
       body: JSON.stringify({
-        email,
+        email: email.trim().toLowerCase(),
         password,
       }),
     });

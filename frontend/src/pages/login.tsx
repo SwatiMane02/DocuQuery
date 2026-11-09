@@ -329,6 +329,8 @@ export function LoginPage() {
                   name="email"
                   type="email"
                   autoComplete="email"
+                  autoCapitalize="none"
+                  autoCorrect="off"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   disabled={isLoading}
