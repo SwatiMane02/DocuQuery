@@ -179,15 +179,15 @@ class LLMService:
             is_summary = True
             
         if is_summary:
-            prompt = f"""You are a document extraction assistant.
+            prompt = f"""You are a helpful document assistant for DocuQuery.
 
-Answer ONLY using the provided context.
+Answer the question using ONLY the provided document context.
 
 Rules:
-- Summarize the main facts from the context.
-- Do not add any introductory or concluding remarks.
-- Do not add preambles, disclaimers, or safety warnings.
-- Return ONLY the summary text.
+- Provide a clear, cohesive summary of the main facts from the context.
+- Ground all statements strictly in the provided text.
+- Do not fabricate facts or extrapolate beyond the text.
+- If the context does not contain sufficient information, respond with: NOT_FOUND
 
 Context:
 {context_text if context_text else "NOT_FOUND"}
@@ -197,17 +197,15 @@ Question:
 
 Answer:"""
         else:
-            prompt = f"""You are a document extraction assistant.
+            prompt = f"""You are a helpful document assistant for DocuQuery.
 
-Answer ONLY using the provided context.
+Answer the user's question clearly, accurately, and naturally based ONLY on the provided document context.
 
 Rules:
-- Extract the value exactly as it appears in the context.
-- Do not simplify, shorten, format, or omit any details.
-- For lists or multiple items, separate them with commas on a single line.
-- Return ONLY the exact extracted text.
-- Do not explain, or add introductory/concluding text.
-- If the answer is not in the context, return exactly: NOT_FOUND
+- For specific fact-seeking questions, extract or state the exact facts and figures accurately.
+- For descriptive, explanatory, or multi-part questions, provide a clear, direct, and well-structured answer using the facts provided in the context.
+- Ground your answer strictly in the provided context. Do not invent details or assume facts not present in the text.
+- If the provided context does not contain enough information to answer the question, respond with: NOT_FOUND
 
 Context:
 {context_text if context_text else "NOT_FOUND"}
@@ -286,16 +284,20 @@ Answer:"""
 
             elapsed_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
 
-            # Normalize/clean answer to NOT_FOUND if it indicates failure or is empty
+            # Normalize/clean answer to NOT_FOUND only if it is an explicit refusal or empty
             answer_clean = answer_text.strip(" '\"`.,").strip()
-            refusal_keywords = [
+            refusal_phrases = [
                 "i cannot assist", "i cannot extract", "i cannot identify", 
                 "i can't assist", "i am unable to", "i'm unable to",
-                "not found", "information is not available", "not mention"
+                "information is not available in the context",
+                "the provided context does not contain",
             ]
-            if (not answer_clean or 
-                answer_clean.upper() == "NOT_FOUND" or 
-                any(kw in answer_clean.lower() for kw in refusal_keywords)):
+            is_explicit_refusal = (
+                not answer_clean
+                or answer_clean.upper() == "NOT_FOUND"
+                or (len(answer_clean) < 140 and any(kw in answer_clean.lower() for kw in refusal_phrases))
+            )
+            if is_explicit_refusal:
                 answer_text = "NOT_FOUND"
             else:
                 answer_text = answer_clean

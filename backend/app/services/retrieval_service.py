@@ -11,10 +11,10 @@ User Query → Query Embedding → Similarity Search → Top Relevant Chunks
 """
 
 import asyncio
+from datetime import datetime
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 from bson import ObjectId
 from motor.motor_asyncio import AsyncIOMotorDatabase
 
@@ -89,54 +89,30 @@ class RetrievalService:
         chunk_embeddings: List[List[float]]
     ) -> np.ndarray:
         """
-        Compute cosine similarity between query and chunk embeddings.
-        
-        Uses sklearn's optimized cosine_similarity for vector operations.
-        Similarity scores: -1.0 (opposite) to 1.0 (identical)
-        
-        Args:
-            query_embedding (List[float]): Query embedding (384 dims)
-            chunk_embeddings (List[List[float]]): List of chunk embeddings
-            
-        Returns:
-            np.ndarray: Similarity scores array shape (n_chunks,)
-            
-        Raises:
-            ValueError: If embeddings have wrong dimensions
-            
-        Example:
-            >>> query_emb = [0.1, 0.2, ..., 0.3]  # 384 dims
-            >>> chunk_embs = [[0.1, 0.21, ..., 0.29], ...]  # n x 384
-            >>> scores = RetrievalService.cosine_similarity_search(query_emb, chunk_embs)
-            >>> scores
-            array([[0.95, 0.87, 0.45, ...]])
+        Compute cosine similarity between query and chunk embeddings using pure NumPy.
+        Lightweight and fast without requiring scikit-learn in memory.
         """
         if not chunk_embeddings:
             logger.warning("No chunk embeddings provided for similarity search")
             return np.array([])
         
         try:
-            # Convert to numpy arrays for sklearn
-            query_array = np.array([query_embedding])  # Shape: (1, 384)
-            chunks_array = np.array(chunk_embeddings)  # Shape: (n_chunks, 384)
+            q = np.array(query_embedding, dtype=np.float32)
+            c = np.array(chunk_embeddings, dtype=np.float32)
             
-            # Validate dimensions
-            if query_array.shape[1] != chunks_array.shape[1]:
+            if q.shape[0] != c.shape[1]:
                 raise ValueError(
-                    f"Embedding dimension mismatch: query {query_array.shape[1]} "
-                    f"vs chunks {chunks_array.shape[1]}"
+                    f"Embedding dimension mismatch: query {q.shape[0]} vs chunks {c.shape[1]}"
                 )
             
-            # Compute cosine similarity: (1, n_chunks)
-            similarities = cosine_similarity(query_array, chunks_array)
+            dot = np.dot(c, q)
+            norm_q = np.linalg.norm(q)
+            norm_c = np.linalg.norm(c, axis=1)
+            denom = norm_q * norm_c
+            denom[denom == 0] = 1e-9
             
-            logger.debug(
-                f"Computed cosine similarities for {len(chunk_embeddings)} chunks. "
-                f"Scores range: [{similarities.min():.4f}, {similarities.max():.4f}]"
-            )
-            
-            # Return flattened array of scores
-            return similarities[0]
+            similarities = dot / denom
+            return similarities
             
         except Exception as e:
             logger.error(f"❌ Cosine similarity computation failed: {str(e)}")
@@ -229,7 +205,8 @@ class RetrievalService:
                     "chunk_index": 1,
                     "content": 1,
                     "chunk_size": 1,
-                    "embedding_vector": 1
+                    "embedding_vector": 1,
+                    "embedding_model": 1,
                 }
             )
             
@@ -253,6 +230,30 @@ class RetrievalService:
                 return []
             
             logger.info(f"✅ Fetched {len(chunks)} chunks with embeddings")
+
+            # Step 2.5: Re-embedding compatibility guarantee
+            # If any chunk was embedded using a legacy model, auto-upgrade it so vectors always match
+            for i, chunk in enumerate(chunks):
+                if chunk.get("embedding_model") != embedding_service.MODEL_NAME:
+                    content = chunk.get("content", "")
+                    if content:
+                        try:
+                            logger.info(f"Auto-upgrading legacy chunk {chunk.get('_id')} to {embedding_service.MODEL_NAME}")
+                            new_vec = await asyncio.to_thread(embedding_service.generate_embedding, content)
+                            chunk_embeddings[i] = new_vec
+                            await db["document_chunks"].update_one(
+                                {"_id": chunk["_id"]},
+                                {
+                                    "$set": {
+                                        "embedding_vector": new_vec,
+                                        "embedding_model": embedding_service.MODEL_NAME,
+                                        "legacy_embedding_vector": chunk.get("embedding_vector"),
+                                        "updated_at": datetime.utcnow()
+                                    }
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(f"Could not auto-upgrade chunk {chunk.get('_id')}: {e}")
             
             # Step 3: Compute similarity scores
             logger.debug("Step 3: Computing cosine similarity scores...")

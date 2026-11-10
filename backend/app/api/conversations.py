@@ -30,6 +30,8 @@ from app.services.llm_errors import (
     LLMAuthError,
     LLMQuotaExceededError,
     LLMRateLimitError,
+    LLMTimeoutError,
+    LLMUnavailableError,
 )
 
 logger = logging.getLogger(__name__)
@@ -269,8 +271,84 @@ async def send_message(
     # Effective document scoping
     doc_id = payload.document_id if payload.document_id is not None else conv.document_id
 
-    # 2. Retrieve relevant chunks
     db = get_database()
+
+    # Pre-check document status when scoped to a specific document
+    if doc_id:
+        doc_obj = None
+        try:
+            doc_obj = await db.documents.find_one({"_id": ObjectId(doc_id), "user_id": user_id})
+        except Exception:
+            doc_obj = await db.documents.find_one({"_id": doc_id, "user_id": user_id})
+
+        if not doc_obj:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Selected document was not found or does not belong to your account.",
+            )
+
+        chunk_status = doc_obj.get("chunk_status")
+        extraction_status = doc_obj.get("extraction_status")
+        chunk_count = doc_obj.get("chunk_count", 0)
+
+        # Check pending/processing
+        if chunk_status in ["pending", "processing"] or extraction_status in ["pending", "processing"]:
+            ai_answer = "This document is still being processed and indexed. Please wait a moment and try again once processing completes."
+            ai_msg = await conversation_service.add_message(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                from_user="ai",
+                content=ai_answer,
+                sources=[],
+            )
+            return MessageResponse(
+                id=str(ai_msg.id),
+                conversation_id=ai_msg.conversation_id,
+                from_user=ai_msg.from_user,
+                content=ai_msg.content,
+                sources=[],
+                created_at=ai_msg.created_at,
+            )
+
+        # Check failed status
+        if chunk_status == "failed" or extraction_status == "failed":
+            ai_answer = "Text extraction failed for this document. Please re-upload or upload a supported, readable PDF."
+            ai_msg = await conversation_service.add_message(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                from_user="ai",
+                content=ai_answer,
+                sources=[],
+            )
+            return MessageResponse(
+                id=str(ai_msg.id),
+                conversation_id=ai_msg.conversation_id,
+                from_user=ai_msg.from_user,
+                content=ai_msg.content,
+                sources=[],
+                created_at=ai_msg.created_at,
+            )
+
+        # Check zero chunks extracted
+        if chunk_count == 0:
+            ai_answer = "No readable text content could be extracted from this document."
+            ai_msg = await conversation_service.add_message(
+                conversation_id=conversation_id,
+                user_id=user_id,
+                from_user="ai",
+                content=ai_answer,
+                sources=[],
+            )
+            return MessageResponse(
+                id=str(ai_msg.id),
+                conversation_id=ai_msg.conversation_id,
+                from_user=ai_msg.from_user,
+                content=ai_msg.content,
+                sources=[],
+                created_at=ai_msg.created_at,
+            )
+
+    # 2. Retrieve relevant chunks
     try:
         retrieved_chunks = await retrieval_service.retrieve_relevant_chunks(
             db=db,
@@ -292,6 +370,8 @@ async def send_message(
                 model=llm_service.DEFAULT_MODEL,
             )
             ai_answer = llm_result["answer"]
+            if ai_answer == "NOT_FOUND":
+                ai_answer = "I could not find information relevant to your question in the document. Please verify your query or check if the topic is covered in this document."
 
             # Enrich source metadata with filenames
             doc_ids = {chunk["document_id"] for chunk in retrieved_chunks}
@@ -308,7 +388,7 @@ async def send_message(
                 {
                     "document_id": chunk["document_id"],
                     "chunk_index": chunk["chunk_index"],
-                    "score": chunk["score"],
+                    "score": round(max(0.0, min(1.0, float(chunk.get("score", 0.0)))), 4),
                     "content": chunk.get("content"),
                     "document_name": doc_names.get(chunk["document_id"]),
                 }
@@ -341,6 +421,18 @@ async def send_message(
     except (LLMQuotaExceededError, LLMRateLimitError) as e:
         llm_metrics.increment("quota_failures")
         raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
+    except LLMTimeoutError as e:
+        llm_metrics.increment("timeout_failures")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="The AI service timed out while generating an answer. Please retry your question.",
+        )
+    except LLMUnavailableError as e:
+        llm_metrics.increment("provider_failures")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The AI provider is temporarily unavailable. Please retry your question in a moment.",
+        )
     except Exception as e:
         logger.error(f"Error during chat answering: {e}", exc_info=True)
         raise HTTPException(

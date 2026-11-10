@@ -42,10 +42,6 @@ import csv
 import io
 from typing import Tuple
 
-import fitz  # PyMuPDF
-import pandas as pd
-from docx import Document as DocxDocument
-
 
 def extract_pdf_text(file_content: bytes) -> Tuple[str, int]:
     """
@@ -79,6 +75,7 @@ def extract_pdf_text(file_content: bytes) -> Tuple[str, int]:
         Exception: If PDF is corrupted or cannot be opened
     """
     try:
+        import fitz  # PyMuPDF lazy loaded
         # Open PDF from bytes in memory (stream)
         # fitz.open(stream=bytes) opens from memory without disk write
         pdf_document = fitz.open(stream=file_content, filetype="pdf")
@@ -144,6 +141,7 @@ def extract_docx_text(file_content: bytes) -> Tuple[str, int]:
         Exception: If DOCX is corrupted or cannot be opened
     """
     try:
+        from docx import Document as DocxDocument  # python-docx lazy loaded
         # Open DOCX from bytes using BytesIO (file-like object)
         docx_file = io.BytesIO(file_content)
         document = DocxDocument(docx_file)
@@ -261,8 +259,8 @@ def extract_csv_text(file_content: bytes) -> Tuple[str, int]:
         # Use StringIO to create file-like object from string
         csv_file = io.StringIO(csv_string)
         
-        # Read CSV with pandas
-        # pandas automatically detects delimiter
+        # Read CSV with pandas (lazy loaded)
+        import pandas as pd
         df = pd.read_csv(csv_file)
         
         # Convert DataFrame to readable text format

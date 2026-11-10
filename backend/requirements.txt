@@ -30,10 +30,6 @@ numpy==1.26.4
 pandas==2.2.1
 
 langchain-text-splitters==0.2.0
-sentence-transformers==5.5.1
-
-torch==2.8.0
-scikit-learn==1.7.2
 cloudinary==1.41.0
 
 google-genai>=1.0.0

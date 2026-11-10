@@ -117,6 +117,16 @@ class Settings(BaseSettings):
         description="Max retries (with exponential backoff) for transient Gemini errors"
     )
 
+    # Embedding model configuration (Gemini zero-memory embeddings)
+    EMBEDDING_MODEL: str = Field(
+        default="gemini-embedding-001",
+        description="Gemini model used for generating embeddings"
+    )
+    EMBEDDING_DIMENSIONS: int = Field(
+        default=384,
+        description="Embedding vector dimensions (384 for fast retrieval and compatibility)"
+    )
+
     # RAG retrieval / context-budget configuration
     TOP_K_RESULTS: int = Field(
         default=10,

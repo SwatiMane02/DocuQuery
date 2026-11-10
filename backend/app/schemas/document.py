@@ -15,9 +15,9 @@ Key differences from models:
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ============================================================================
@@ -458,6 +458,16 @@ class ChatSourceMetadata(BaseModel):
     score: float = Field(..., ge=0.0, le=1.0, description="Similarity score")
     content: Optional[str] = Field(default=None, description="Source chunk text content")
     document_name: Optional[str] = Field(default=None, description="Source document filename")
+
+    @field_validator("score", mode="before")
+    @classmethod
+    def clamp_score(cls, v: Any) -> float:
+        """Clamp cosine similarity score strictly to [0.0, 1.0] to prevent validation errors."""
+        try:
+            val = float(v)
+            return round(max(0.0, min(1.0, val)), 4)
+        except Exception:
+            return 0.0
     
     class Config:
         populate_by_name = True

@@ -21,6 +21,7 @@ import {
   Eraser,
   PanelLeftClose,
   PanelLeft,
+  RotateCw,
 } from "lucide-react";
 import {
   DocumentService,
@@ -43,6 +44,7 @@ interface ChatMessage {
   created_at?: string;
   error?: string;
   loading?: boolean;
+  query?: string;
 }
 
 const SUGGESTED_PROMPTS = [
@@ -62,6 +64,8 @@ function AIQuery() {
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
+  const [isDocumentsLoading, setIsDocumentsLoading] = useState(true);
+  const [documentsError, setDocumentsError] = useState<string | null>(null);
   const [scope, setScope] = useState<"current" | "all">("current");
   const [selectedDocId, setSelectedDocId] = useState<string>("");
   const [attachedDoc, setAttachedDoc] = useState<DocumentResponse | null>(null);
@@ -73,6 +77,7 @@ function AIQuery() {
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const consumedDocHandoffIdRef = useRef<string | null>(null);
 
   // Fetch documents and conversation list on mount
   useEffect(() => {
@@ -80,6 +85,8 @@ function AIQuery() {
   }, [location.state]);
 
   const loadDocumentsAndConversations = async () => {
+    setIsDocumentsLoading(true);
+    setDocumentsError(null);
     try {
       const [docResponse, convListResponse] = await Promise.allSettled([
         DocumentService.listDocuments(0, 100),
@@ -90,15 +97,35 @@ function AIQuery() {
       if (docResponse.status === "fulfilled") {
         loadedDocs = docResponse.value.documents || [];
         setDocuments(loadedDocs);
+      } else {
+        setDocumentsError("Failed to load documents");
       }
 
+      let loadedConvs: ConversationResponse[] = [];
       if (convListResponse.status === "fulfilled") {
-        setConversations(convListResponse.value.conversations || []);
+        loadedConvs = convListResponse.value.conversations || [];
+        setConversations(loadedConvs);
       }
 
-      // Check handoff from Documents page
+      // Check handoff from Documents page (consume once per doc ID to avoid wiping history on navigation/refresh)
       const selectedDocFromState = (location.state as any)?.selectedDocument;
-      if (selectedDocFromState) {
+      if (
+        selectedDocFromState &&
+        consumedDocHandoffIdRef.current !== selectedDocFromState.id
+      ) {
+        consumedDocHandoffIdRef.current = selectedDocFromState.id;
+
+        // Clear window history state so subsequent page refreshes / navigations don't re-trigger handoff
+        try {
+          if (window.history.state) {
+            const nextState = { ...window.history.state };
+            if (nextState.usr) delete nextState.usr.selectedDocument;
+            window.history.replaceState(nextState, document.title);
+          }
+        } catch {
+          // ignore
+        }
+
         const docId = selectedDocFromState.id;
         const exists = loadedDocs.find((d) => d.id === docId);
         const resolvedDoc = exists || selectedDocFromState;
@@ -110,13 +137,9 @@ function AIQuery() {
         return;
       }
 
-      // If conversations exist, load the latest conversation by default
-      if (
-        convListResponse.status === "fulfilled" &&
-        (convListResponse.value.conversations || []).length > 0 &&
-        !activeConvId
-      ) {
-        const latest = convListResponse.value.conversations[0];
+      // If conversations exist, load the latest conversation by default (if none active)
+      if (loadedConvs.length > 0 && !activeConvId) {
+        const latest = loadedConvs[0];
         loadConversation(latest.id);
       } else if (loadedDocs.length > 0 && !selectedDocId) {
         setSelectedDocId(loadedDocs[0].id);
@@ -124,6 +147,8 @@ function AIQuery() {
       }
     } catch (err) {
       console.error("Failed to load initial data for AI Query:", err);
+    } finally {
+      setIsDocumentsLoading(false);
     }
   };
 
@@ -276,9 +301,8 @@ function AIQuery() {
     }
   };
 
-  const handleSubmit = async (e?: React.FormEvent) => {
-    e?.preventDefault();
-    const query = input.trim();
+  const executeSendMessage = async (queryText: string, retryAiMsgId?: string) => {
+    const query = queryText.trim();
     if (!query || isLoading) return;
 
     if (scope === "current" && !selectedDocId) {
@@ -286,16 +310,27 @@ function AIQuery() {
       return;
     }
 
-    const userMsgId = `user-${Date.now()}`;
-    const aiMsgId = `ai-${Date.now()}`;
+    const aiMsgId = retryAiMsgId || `ai-${Date.now()}`;
     const nowIso = new Date().toISOString();
 
-    setMessages((prev) => [
-      ...prev,
-      { id: userMsgId, from: "user", content: query, created_at: nowIso },
-      { id: aiMsgId, from: "ai", content: "", loading: true, created_at: nowIso },
-    ]);
-    setInput("");
+    if (retryAiMsgId) {
+      setMessages((prev) =>
+        prev.map((msg) =>
+          msg.id === retryAiMsgId
+            ? { ...msg, loading: true, error: undefined, content: "", query }
+            : msg,
+        ),
+      );
+    } else {
+      const userMsgId = `user-${Date.now()}`;
+      setMessages((prev) => [
+        ...prev,
+        { id: userMsgId, from: "user", content: query, created_at: nowIso },
+        { id: aiMsgId, from: "ai", content: "", loading: true, created_at: nowIso, query },
+      ]);
+      setInput("");
+    }
+
     setIsLoading(true);
 
     try {
@@ -330,6 +365,7 @@ function AIQuery() {
                 sources: aiResponse.sources,
                 created_at: aiResponse.created_at,
                 loading: false,
+                query,
               }
             : msg,
         ),
@@ -343,7 +379,7 @@ function AIQuery() {
       setMessages((prev) =>
         prev.map((msg) =>
           msg.id === aiMsgId
-            ? { ...msg, content: "", error: errorMessage, loading: false }
+            ? { ...msg, content: "", error: errorMessage, loading: false, query }
             : msg,
         ),
       );
@@ -351,6 +387,22 @@ function AIQuery() {
     } finally {
       setIsLoading(false);
       textareaRef.current?.focus();
+    }
+  };
+
+  const handleSubmit = async (e?: React.FormEvent) => {
+    e?.preventDefault();
+    executeSendMessage(input);
+  };
+
+  const handleRetry = (msg: ChatMessage) => {
+    if (msg.query) {
+      executeSendMessage(msg.query, msg.id);
+    } else {
+      const msgIndex = messages.findIndex((m) => m.id === msg.id);
+      if (msgIndex > 0 && messages[msgIndex - 1].from === "user") {
+        executeSendMessage(messages[msgIndex - 1].content, msg.id);
+      }
     }
   };
 
@@ -621,13 +673,26 @@ function AIQuery() {
                   onChange={(e) => setSelectedDocId(e.target.value)}
                   className="h-9 w-[160px] sm:w-[190px] lg:w-[220px] appearance-none rounded-xl border border-[rgba(237,231,220,0.18)] bg-[#0A0C0E] text-xs font-medium text-[#EDE7DC] focus:border-[#E8913C] focus:outline-none cursor-pointer truncate"
                   style={{ paddingLeft: "12px", paddingRight: "32px" }}
+                  disabled={isDocumentsLoading}
                 >
-                  {documents.length === 0 ? (
-                    <option value="" className="bg-[#101317] text-[#9EA5A8]">No documents found</option>
+                  {isDocumentsLoading ? (
+                    <option value="" disabled className="bg-[#101317] text-[#9EA5A8]">
+                      Loading documents...
+                    </option>
+                  ) : documentsError ? (
+                    <option value="" disabled className="bg-[#101317] text-[#E5484D]">
+                      Failed to load documents
+                    </option>
+                  ) : documents.length === 0 ? (
+                    <option value="" disabled className="bg-[#101317] text-[#9EA5A8]">
+                      No documents uploaded yet
+                    </option>
                   ) : (
                     <>
                       {(!selectedDocId || !attachedDoc) && (
-                        <option value="" className="bg-[#101317] text-[#9EA5A8]">Select document...</option>
+                        <option value="" className="bg-[#101317] text-[#9EA5A8]">
+                          Select document...
+                        </option>
                       )}
                       {documents.map((doc) => (
                         <option key={doc.id} value={doc.id} className="bg-[#101317] text-[#EDE7DC]">
@@ -718,7 +783,14 @@ function AIQuery() {
               </div>
             </motion.div>
           ) : (
-            messages.map((msg) => <MessageItem key={msg.id} msg={msg} />)
+            messages.map((msg) => (
+              <MessageItem
+                key={msg.id}
+                msg={msg}
+                onRetry={handleRetry}
+                isLoading={isLoading}
+              />
+            ))
           )}
           <div ref={messagesEndRef} />
         </div>
@@ -805,7 +877,15 @@ function AIQuery() {
   );
 }
 
-function MessageItem({ msg }: { msg: ChatMessage }) {
+function MessageItem({
+  msg,
+  onRetry,
+  isLoading,
+}: {
+  msg: ChatMessage;
+  onRetry?: (msg: ChatMessage) => void;
+  isLoading?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
   const [sourcesOpen, setSourcesOpen] = useState(true);
 
@@ -870,16 +950,30 @@ function MessageItem({ msg }: { msg: ChatMessage }) {
           </div>
         )}
 
-        {/* Error state */}
+        {/* Error state with retry action */}
         {msg.error && (
           <div
-            className="rounded-2xl rounded-tl-sm border border-[#E5484D]/30 bg-[#E5484D]/10 text-xs sm:text-sm text-[#EDE7DC] shadow-sm"
-            style={{ padding: "20px 24px" }}
+            className="rounded-2xl rounded-tl-sm border border-[#E5484D]/30 bg-[#E5484D]/10 text-xs sm:text-sm text-[#EDE7DC] shadow-sm space-y-3"
+            style={{ padding: "18px 22px" }}
           >
             <div className="flex items-start gap-2.5 text-[#E5484D]">
               <AlertCircle className="h-4.5 w-4.5 mt-0.5 shrink-0" />
-              <span>{msg.error}</span>
+              <span className="leading-relaxed">{msg.error}</span>
             </div>
+            {onRetry && (
+              <div className="flex justify-end pt-1">
+                <button
+                  type="button"
+                  onClick={() => onRetry(msg)}
+                  disabled={isLoading}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-[#E5484D]/20 hover:bg-[#E5484D]/35 border border-[#E5484D]/40 text-xs font-medium text-[#EDE7DC] transition-colors cursor-pointer disabled:opacity-50"
+                  title="Retry your question"
+                >
+                  <RotateCw className="h-3.5 w-3.5" />
+                  <span>Retry Question</span>
+                </button>
+              </div>
+            )}
           </div>
         )}
 
