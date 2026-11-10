@@ -12,9 +12,10 @@ Key concepts:
 - Settings are loaded once at startup for performance
 """
 
+from typing import Any
 from pathlib import Path
 from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic import Field, field_validator
 
 
 class Settings(BaseSettings):
@@ -126,6 +127,13 @@ class Settings(BaseSettings):
         default=384,
         description="Embedding vector dimensions (384 for fast retrieval and compatibility)"
     )
+
+    @field_validator("EMBEDDING_MODEL", mode="before")
+    @classmethod
+    def validate_embedding_model(cls, v: Any) -> str:
+        if not v or "text-embedding" in str(v):
+            return "gemini-embedding-001"
+        return str(v)
 
     # RAG retrieval / context-budget configuration
     TOP_K_RESULTS: int = Field(

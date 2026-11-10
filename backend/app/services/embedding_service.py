@@ -37,7 +37,8 @@ class EmbeddingService:
     - Zero local model memory consumption
     """
     
-    MODEL_NAME = getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-001")
+    _raw_model = getattr(settings, "EMBEDDING_MODEL", "gemini-embedding-001")
+    MODEL_NAME = "gemini-embedding-001" if (not _raw_model or "text-embedding" in str(_raw_model)) else str(_raw_model)
     EMBEDDING_DIMENSIONS = getattr(settings, "EMBEDDING_DIMENSIONS", 384)
     
     _client_instance = None
