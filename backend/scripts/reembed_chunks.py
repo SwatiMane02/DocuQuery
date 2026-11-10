@@ -35,16 +35,16 @@ async def migrate_chunks():
     total_chunks = await collection.count_documents({})
     print(f"Total chunks in database: {total_chunks}")
 
-    query = {"embedding_status": "completed"}
+    query = {"content": {"$exists": True, "$ne": ""}}
     cursor = collection.find(query)
     chunks = await cursor.to_list(length=1000)
 
     if not chunks:
-        print("No completed chunks found to re-embed.")
+        print("No chunks with content found to re-embed.")
         await close_mongo_connection()
         return
 
-    print(f"Found {len(chunks)} chunks with completed embeddings to re-embed.\n")
+    print(f"Found {len(chunks)} chunks with content to process/re-embed.\n")
 
     start_time = time.perf_counter()
     migrated = 0
@@ -68,6 +68,7 @@ async def migrate_chunks():
                             "legacy_embedding_vector": chunk.get("embedding_vector"),
                             "embedding_vector": new_vector,
                             "embedding_model": embedding_service.MODEL_NAME,
+                            "embedding_status": "completed",
                             "updated_at": asyncio.get_event_loop().time()
                         }
                     }

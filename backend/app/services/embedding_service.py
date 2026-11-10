@@ -83,6 +83,19 @@ class EmbeddingService:
         
         except Exception as e:
             logger.error(f"Gemini embedding generation failed: {str(e)}")
+            err_str = str(e).lower()
+            if "quota" in err_str or "resource_exhausted" in err_str or "429" in err_str:
+                from app.services.llm_errors import LLMQuotaExceededError
+                raise LLMQuotaExceededError("Gemini embedding quota exceeded. Please try again later.") from e
+            elif "timeout" in err_str or "timed out" in err_str:
+                from app.services.llm_errors import LLMTimeoutError
+                raise LLMTimeoutError("Gemini embedding request timed out.") from e
+            elif "api_key" in err_str or "unauthorized" in err_str or "401" in err_str:
+                from app.services.llm_errors import LLMAuthError
+                raise LLMAuthError("Invalid Gemini API credentials.") from e
+            elif "503" in err_str or "unavailable" in err_str:
+                from app.services.llm_errors import LLMUnavailableError
+                raise LLMUnavailableError("Gemini embedding service is temporarily unavailable.") from e
             raise RuntimeError(f"Embedding generation failed: {str(e)}") from e
     
     @classmethod
@@ -136,7 +149,20 @@ class EmbeddingService:
             
         except Exception as e:
             logger.error(f"Failed to generate batch embeddings: {str(e)}")
-            raise
+            err_str = str(e).lower()
+            if "quota" in err_str or "resource_exhausted" in err_str or "429" in err_str:
+                from app.services.llm_errors import LLMQuotaExceededError
+                raise LLMQuotaExceededError("Gemini embedding quota exceeded. Please try again later.") from e
+            elif "timeout" in err_str or "timed out" in err_str:
+                from app.services.llm_errors import LLMTimeoutError
+                raise LLMTimeoutError("Gemini embedding request timed out.") from e
+            elif "api_key" in err_str or "unauthorized" in err_str or "401" in err_str:
+                from app.services.llm_errors import LLMAuthError
+                raise LLMAuthError("Invalid Gemini API credentials.") from e
+            elif "503" in err_str or "unavailable" in err_str:
+                from app.services.llm_errors import LLMUnavailableError
+                raise LLMUnavailableError("Gemini embedding service is temporarily unavailable.") from e
+            raise RuntimeError(f"Embedding generation failed: {str(e)}") from e
     
     @classmethod
     async def store_embeddings_in_mongodb(
@@ -147,6 +173,7 @@ class EmbeddingService:
         """
         Store embeddings in document_chunks collection.
         Updates embedding_vector, embedding_model and embedding_status for each chunk.
+        Backs up previous embedding_vector into legacy_embedding_vector.
         """
         try:
             collection = db["document_chunks"]
@@ -164,16 +191,20 @@ class EmbeddingService:
                         continue
                     
                     query = {"_id": ObjectId(chunk_id)} if ObjectId.is_valid(chunk_id) else {"_id": chunk_id}
+                    existing = await collection.find_one(query, {"embedding_vector": 1, "legacy_embedding_vector": 1})
+                    
+                    update_fields: dict[str, Any] = {
+                        "embedding_vector": embedding_vector,
+                        "embedding_model": cls.MODEL_NAME,
+                        "embedding_status": "completed",
+                        "updated_at": datetime.utcnow()
+                    }
+                    if existing and existing.get("embedding_vector") and not existing.get("legacy_embedding_vector"):
+                        update_fields["legacy_embedding_vector"] = existing["embedding_vector"]
+
                     result = await collection.update_one(
                         query,
-                        {
-                            "$set": {
-                                "embedding_vector": embedding_vector,
-                                "embedding_model": cls.MODEL_NAME,
-                                "embedding_status": "completed",
-                                "updated_at": datetime.utcnow()
-                            }
-                        }
+                        {"$set": update_fields}
                     )
                     
                     if result.matched_count > 0 or result.modified_count > 0:
@@ -217,9 +248,13 @@ class EmbeddingService:
         Fetches all chunks, generates Gemini embeddings, and updates MongoDB.
         """
         try:
+            from bson import ObjectId
             collection = db["document_chunks"]
             chunks = []
-            async for chunk in collection.find({"document_id": document_id}):
+            doc_filter = [str(document_id)]
+            if ObjectId.is_valid(document_id):
+                doc_filter.append(ObjectId(document_id))
+            async for chunk in collection.find({"document_id": {"$in": doc_filter}}):
                 chunks.append(chunk)
             
             if not chunks:

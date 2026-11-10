@@ -151,6 +151,16 @@ class ChunkingService:
         try:
             collection = db[ChunkingService.CHUNK_COLLECTION_NAME]
             
+            # Idempotency guarantee: remove any existing chunks for this specific document and user before inserting
+            if chunk_documents:
+                first_doc_id = chunk_documents[0].get("document_id")
+                first_user_id = chunk_documents[0].get("user_id")
+                if first_doc_id and first_user_id:
+                    await collection.delete_many({
+                        "document_id": str(first_doc_id),
+                        "user_id": str(first_user_id)
+                    })
+
             # Bulk insert - all or nothing attempt
             result = await collection.insert_many(chunk_documents, ordered=False)
             

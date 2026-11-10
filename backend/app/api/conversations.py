@@ -275,11 +275,18 @@ async def send_message(
 
     # Pre-check document status when scoped to a specific document
     if doc_id:
-        doc_obj = None
-        try:
-            doc_obj = await db.documents.find_one({"_id": ObjectId(doc_id), "user_id": user_id})
-        except Exception:
-            doc_obj = await db.documents.find_one({"_id": doc_id, "user_id": user_id})
+        user_id_variants = [str(user_id)]
+        if ObjectId.is_valid(user_id):
+            user_id_variants.append(ObjectId(user_id))
+
+        doc_id_variants = [str(doc_id)]
+        if ObjectId.is_valid(doc_id):
+            doc_id_variants.append(ObjectId(doc_id))
+
+        doc_obj = await db.documents.find_one({
+            "_id": {"$in": doc_id_variants},
+            "user_id": {"$in": user_id_variants}
+        })
 
         if not doc_obj:
             raise HTTPException(
@@ -290,6 +297,24 @@ async def send_message(
         chunk_status = doc_obj.get("chunk_status")
         extraction_status = doc_obj.get("extraction_status")
         chunk_count = doc_obj.get("chunk_count", 0)
+
+        # If chunk_count is 0 or status is pending, check if chunks actually exist in document_chunks
+        if chunk_count == 0 or chunk_status in ["pending", "processing"]:
+            actual_count = await db.document_chunks.count_documents({
+                "document_id": {"$in": doc_id_variants},
+                "user_id": {"$in": user_id_variants}
+            })
+            if actual_count > 0:
+                chunk_count = actual_count
+                chunk_status = "chunked"
+                await db.documents.update_one(
+                    {"_id": doc_obj["_id"], "user_id": {"$in": user_id_variants}},
+                    {"$set": {"chunk_count": actual_count, "chunk_status": "chunked"}}
+                )
+            elif doc_obj.get("extracted_text"):
+                # Document has extracted text, retrieval_service can auto-chunk it on the fly
+                chunk_count = 1
+                chunk_status = "chunked"
 
         # Check pending/processing
         if chunk_status in ["pending", "processing"] or extraction_status in ["pending", "processing"]:

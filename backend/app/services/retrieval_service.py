@@ -40,6 +40,14 @@ class RetrievalService:
         - Typical relevant scores: > 0.5
     """
 
+    _doc_locks: Dict[str, asyncio.Lock] = {}
+
+    @classmethod
+    def _get_doc_lock(cls, key: str) -> asyncio.Lock:
+        if key not in cls._doc_locks:
+            cls._doc_locks[key] = asyncio.Lock()
+        return cls._doc_locks[key]
+
     @staticmethod
     async def generate_query_embedding(query: str) -> List[float]:
         """
@@ -187,88 +195,181 @@ class RetrievalService:
             logger.debug("Step 1: Generating query embedding...")
             query_embedding = await RetrievalService.generate_query_embedding(query)
             
-            # Step 2: Fetch document chunks with embeddings scoped by user_id and optionally document_id
-            logger.debug("Step 2: Fetching scoped chunks from MongoDB...")
-            query_filter = {
-                "embedding_vector": {"$exists": True, "$ne": None},
-                "embedding_status": "completed",
-                "user_id": user_id
+            # Step 2: Fetch document chunks scoped by user_id and optionally document_id
+            # Support both string and ObjectId representations in MongoDB
+            user_id_variants = [str(user_id)]
+            if ObjectId.is_valid(user_id):
+                user_id_variants.append(ObjectId(user_id))
+
+            query_filter: Dict[str, Any] = {
+                "user_id": {"$in": user_id_variants}
             }
+
+            doc_id_variants = []
             if document_id:
-                query_filter["document_id"] = document_id
+                doc_id_variants = [str(document_id)]
+                if ObjectId.is_valid(document_id):
+                    doc_id_variants.append(ObjectId(document_id))
+                query_filter["document_id"] = {"$in": doc_id_variants}
                 
             chunks_cursor = db["document_chunks"].find(
                 query_filter,
                 {
                     "_id": 1,
                     "document_id": 1,
+                    "user_id": 1,
                     "chunk_index": 1,
                     "content": 1,
                     "chunk_size": 1,
                     "embedding_vector": 1,
                     "embedding_model": 1,
+                    "embedding_status": 1,
                 }
-            )
+            ).sort("chunk_index", 1)
             
-            # Fetch all chunks into memory
-            chunks = []
-            chunk_embeddings = []
-            chunk_metadata = []
+            # Fetch all chunks for this scope into memory
+            chunks = await chunks_cursor.to_list(length=1000)
             
-            async for chunk in chunks_cursor:
-                chunks.append(chunk)
-                chunk_embeddings.append(chunk.get("embedding_vector", []))
-                chunk_metadata.append({
-                    "chunk_index": chunk.get("chunk_index", 0),
-                    "document_id": str(chunk.get("document_id", "")),
-                    "content": chunk.get("content", ""),
-                    "chunk_size": chunk.get("chunk_size", 0)
-                })
-            
+            # Step 2.1: Idempotent self-healing if document has 0 chunks but has extracted text in MongoDB
+            if not chunks and document_id:
+                lock_key = f"chunk_{document_id}"
+                async with RetrievalService._get_doc_lock(lock_key):
+                    # Re-check in case a concurrent coroutine already finished chunking
+                    existing_check = await db["document_chunks"].find(query_filter).sort("chunk_index", 1).to_list(1000)
+                    if existing_check:
+                        chunks = existing_check
+                    else:
+                        logger.info(f"No chunks found in document_chunks for doc {document_id}. Checking for extracted text...")
+                        doc_record = await db["documents"].find_one({
+                            "_id": {"$in": doc_id_variants},
+                            "user_id": {"$in": user_id_variants}
+                        })
+                        if doc_record and doc_record.get("extracted_text"):
+                            extracted_text = doc_record["extracted_text"]
+                            logger.info(f"Auto-chunking document {document_id} from extracted_text ({len(extracted_text)} chars)...")
+                            try:
+                                from app.services.chunking_service import chunking_service
+                                chunk_count, _ = await chunking_service.process_document_chunks(
+                                    db=db,
+                                    extracted_text=extracted_text,
+                                    document_id=str(document_id),
+                                    user_id=str(user_id)
+                                )
+                                if chunk_count > 0:
+                                    chunks = await db["document_chunks"].find(query_filter).sort("chunk_index", 1).to_list(1000)
+                            except Exception as chunk_err:
+                                logger.warning(f"Auto-chunking fallback failed: {chunk_err}")
+
             if not chunks:
-                logger.warning("⚠️  No chunks with embeddings found in MongoDB")
+                logger.warning(f"⚠️ No chunks found in MongoDB for user={user_id[:8]}... doc={document_id}")
                 return []
             
-            logger.info(f"✅ Fetched {len(chunks)} chunks with embeddings")
+            logger.info(f"✅ Fetched {len(chunks)} raw chunks from MongoDB")
 
-            # Step 2.5: Re-embedding compatibility guarantee
-            # If any chunk was embedded using a legacy model, auto-upgrade it so vectors always match
-            for i, chunk in enumerate(chunks):
-                if chunk.get("embedding_model") != embedding_service.MODEL_NAME:
-                    content = chunk.get("content", "")
-                    if content:
+            # Step 2.5: Idempotent re-embedding / missing-embedding healing guarantee
+            # Check for chunks that have no embedding, wrong dimension, or legacy model
+            chunks_needing_embedding = []
+            for chunk in chunks:
+                vec = chunk.get("embedding_vector")
+                model = chunk.get("embedding_model")
+                status = chunk.get("embedding_status")
+                
+                needs_embed = False
+                if not vec or not isinstance(vec, list) or len(vec) != embedding_service.EMBEDDING_DIMENSIONS:
+                    needs_embed = True
+                elif model != embedding_service.MODEL_NAME:
+                    needs_embed = True
+                elif status != "completed":
+                    needs_embed = True
+                    
+                if needs_embed and chunk.get("content") and str(chunk.get("content")).strip():
+                    chunks_needing_embedding.append(chunk)
+
+            if chunks_needing_embedding:
+                embed_lock_key = f"embed_{document_id}" if document_id else f"embed_user_{user_id}"
+                async with RetrievalService._get_doc_lock(embed_lock_key):
+                    # Re-check database to ensure another concurrent request hasn't already embedded them
+                    recheck_chunks = await db["document_chunks"].find(
+                        {"_id": {"$in": [c["_id"] for c in chunks_needing_embedding]}}
+                    ).to_list(len(chunks_needing_embedding))
+
+                    still_needing = []
+                    for c in recheck_chunks:
+                        vec = c.get("embedding_vector")
+                        model = c.get("embedding_model")
+                        status = c.get("embedding_status")
+                        if not vec or len(vec) != embedding_service.EMBEDDING_DIMENSIONS or model != embedding_service.MODEL_NAME or status != "completed":
+                            still_needing.append(c)
+
+                    if still_needing:
+                        logger.info(
+                            f"🔄 Auto-generating/upgrading Gemini embeddings for "
+                            f"{len(still_needing)}/{len(chunks)} chunks..."
+                        )
                         try:
-                            logger.info(f"Auto-upgrading legacy chunk {chunk.get('_id')} to {embedding_service.MODEL_NAME}")
-                            new_vec = await asyncio.to_thread(embedding_service.generate_embedding, content)
-                            chunk_embeddings[i] = new_vec
-                            await db["document_chunks"].update_one(
-                                {"_id": chunk["_id"]},
-                                {
-                                    "$set": {
-                                        "embedding_vector": new_vec,
-                                        "embedding_model": embedding_service.MODEL_NAME,
-                                        "legacy_embedding_vector": chunk.get("embedding_vector"),
-                                        "updated_at": datetime.utcnow()
-                                    }
-                                }
+                            generated_tuples = await embedding_service.generate_embeddings_for_chunks(
+                                still_needing,
+                                batch_size=16
                             )
-                        except Exception as e:
-                            logger.warning(f"Could not auto-upgrade chunk {chunk.get('_id')}: {e}")
+                            await embedding_service.store_embeddings_in_mongodb(db, generated_tuples)
+
+                            # If this was a single document, ensure document metadata reflects indexed state
+                            if document_id:
+                                await db["documents"].update_one(
+                                    {"_id": {"$in": doc_id_variants}, "user_id": {"$in": user_id_variants}},
+                                    {
+                                        "$set": {
+                                            "chunk_status": "chunked",
+                                            "processing_status": "completed",
+                                            "chunk_count": len(chunks)
+                                        }
+                                    }
+                                )
+                            logger.info(f"✅ Successfully healed {len(generated_tuples)} chunk embeddings")
+                        except Exception as auto_embed_err:
+                            logger.error(f"❌ Auto-embedding generation failed: {auto_embed_err}")
+                            raise
+
+                    # Re-fetch chunks with their updated embeddings
+                    chunks = await db["document_chunks"].find(query_filter).sort("chunk_index", 1).to_list(1000)
+
+            # Keep only chunks that have a valid embedding vector of the expected dimension
+            valid_chunks = []
+            chunk_embeddings = []
+            chunk_metadata = []
+
+            for chunk in chunks:
+                vec = chunk.get("embedding_vector")
+                if vec and isinstance(vec, list) and len(vec) == embedding_service.EMBEDDING_DIMENSIONS:
+                    valid_chunks.append(chunk)
+                    chunk_embeddings.append(vec)
+                    chunk_metadata.append({
+                        "chunk_index": chunk.get("chunk_index", 0),
+                        "document_id": str(chunk.get("document_id", "")),
+                        "content": chunk.get("content", ""),
+                        "chunk_size": chunk.get("chunk_size", 0)
+                    })
+
+            if not valid_chunks:
+                logger.error("❌ No valid chunks with completed 384-dim embeddings available for retrieval")
+                raise RuntimeError("Failed to retrieve valid embeddings for document chunks. Please retry in a moment.")
             
             # Step 3: Compute similarity scores
-            logger.debug("Step 3: Computing cosine similarity scores...")
+            logger.debug(f"Step 3: Computing cosine similarity scores for {len(valid_chunks)} chunks...")
             similarity_scores = RetrievalService.cosine_similarity_search(
                 query_embedding,
                 chunk_embeddings
             )
             
-            logger.debug(
-                f"Similarity scores computed. Max: {similarity_scores.max():.4f}, "
-                f"Min: {similarity_scores.min():.4f}"
+            score_max = float(similarity_scores.max()) if len(similarity_scores) > 0 else 0.0
+            score_min = float(similarity_scores.min()) if len(similarity_scores) > 0 else 0.0
+            score_mean = float(similarity_scores.mean()) if len(similarity_scores) > 0 else 0.0
+            logger.info(
+                f"Similarity scores: max={score_max:.4f}, min={score_min:.4f}, mean={score_mean:.4f} "
+                f"(threshold={min_score:.2f})"
             )
             
             # Step 4: Create results with scores and sort
-            logger.debug("Step 4: Sorting and filtering results...")
             results_with_scores: List[Dict[str, Any]] = []
             
             for i, (metadata, score) in enumerate(zip(chunk_metadata, similarity_scores)):
@@ -282,12 +383,29 @@ class RetrievalService:
                     }
                     results_with_scores.append(result)
             
+            # Fallback for document-scoped queries (e.g., "summarize this document")
+            # If scoped to a specific document and all scores were below min_score,
+            # include top chunks strictly and only from the selected, authorized document.
+            if document_id and not results_with_scores and valid_chunks:
+                logger.info("Document-scoped query fallback: all scores below min_score, including top chunks")
+                allowed_doc_ids = {str(d) for d in doc_id_variants}
+                fallback_candidates = []
+                for metadata, score in zip(chunk_metadata, similarity_scores):
+                    if str(metadata.get("document_id")) in allowed_doc_ids:
+                        fallback_candidates.append({
+                            "chunk_index": metadata["chunk_index"],
+                            "score": max(0.0, float(score)),
+                            "content": metadata["content"],
+                            "document_id": metadata["document_id"],
+                            "chunk_size": metadata["chunk_size"]
+                        })
+                fallback_candidates.sort(key=lambda x: x["score"], reverse=True)
+                results_with_scores = fallback_candidates
+
             # Sort by score descending
             results_with_scores.sort(key=lambda x: x["score"], reverse=True)
             
             # Step 5: Deduplicate Retrieved Chunks before applying top_k
-            logger.info(f"Total results before deduplication: {len(results_with_scores)}")
-            
             seen = set()
             deduplicated = []
             for result in results_with_scores:
@@ -297,16 +415,13 @@ class RetrievalService:
                 seen.add(fingerprint)
                 deduplicated.append(result)
                 
-            logger.info(f"Total results after deduplication: {len(deduplicated)}")
-            
             # Get top-k results
             top_results = deduplicated[:top_k]
             
             top_score_str = (f"{top_results[0]['score']:.4f}" if top_results else "N/A")
             logger.info(
                 f"✅ Semantic search completed. Returning {len(top_results)} / {top_k} "
-                f"chunks (threshold: {min_score:.2f}). "
-                f"Top score: {top_score_str}"
+                f"chunks. Top score: {top_score_str}"
             )
             
             return top_results
