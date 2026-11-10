@@ -15,6 +15,7 @@ export interface UserResponse {
 export interface TokenResponse {
   access_token: string;
   token_type: string;
+  user?: UserResponse | null;
 }
 
 export class AuthService {

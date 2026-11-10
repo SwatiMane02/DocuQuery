@@ -215,7 +215,8 @@ class Token(BaseModel):
     Response example:
     {
         "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "user": { ... }
     }
     
     Note: token_type="bearer" is OAuth2 standard
@@ -224,6 +225,7 @@ class Token(BaseModel):
     Attributes:
         access_token: JWT token to include in future requests
         token_type: Always "bearer" (OAuth2 standard)
+        user: Optional safe authenticated user profile for immediate UI hydration
     """
     
     access_token: str = Field(
@@ -234,12 +236,25 @@ class Token(BaseModel):
         default="bearer",
         description="Token type (always 'bearer' for JWT)"
     )
+    user: Optional[UserResponse] = Field(
+        default=None,
+        description="Safe authenticated user profile (excludes sensitive hashes/secrets)"
+    )
     
     class Config:
         json_schema_extra = {
             "example": {
                 "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyQGV4YW1wbGUuY29tIiwiZXhwIjoxMjM0NTY3ODkwfQ...",
-                "token_type": "bearer"
+                "token_type": "bearer",
+                "user": {
+                    "_id": "507f1f77bcf86cd799439011",
+                    "email": "john@example.com",
+                    "full_name": "John Doe",
+                    "role": "free",
+                    "documents_limit": 10,
+                    "is_active": True,
+                    "created_at": "2024-05-24T10:30:00Z"
+                }
             }
         }
 

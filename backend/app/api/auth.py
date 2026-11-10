@@ -195,20 +195,30 @@ async def register(user_create: UserCreate) -> Token:
     }
     access_token = create_access_token(data=token_data)
     
-    return Token(access_token=access_token)
+    user_response = UserResponse(
+        id=str(user.id) if user.id else None,
+        email=user.email,
+        full_name=user.full_name,
+        bio=user.bio,
+        role=user.role,
+        documents_limit=user.documents_limit,
+        is_active=user.is_active,
+        created_at=user.created_at,
+    )
+    return Token(access_token=access_token, user=user_response)
 
 
 @router.post("/login", response_model=Token)
 async def login(user_login: UserLogin) -> Token:
     """
-    Authenticate user and return JWT access token.
+    Authenticate user and return JWT access token along with safe user profile.
     
     Process:
     1. Validate input using UserLogin schema
     2. Find user by email in database
     3. Verify password matches stored hash
     4. Generate JWT token
-    5. Return token to client
+    5. Return token and user profile to client
     
     Request Body (JSON):
     {
@@ -219,35 +229,14 @@ async def login(user_login: UserLogin) -> Token:
     Success Response (200 OK):
     {
         "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-        "token_type": "bearer"
+        "token_type": "bearer",
+        "user": { ... }
     }
-    
-    Client then includes token in requests:
-    Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-    
-    Error Response (401 Unauthorized):
-    - Email not found in database
-    - Password doesn't match
-    - Account is inactive
-    
-    Security Note:
-    We return generic error message "Invalid email or password" for BOTH cases
-    (email not found OR password wrong). This prevents attackers from enumerating
-    valid email addresses through login endpoint.
-    
-    Args:
-        user_login: UserLogin schema (validated by FastAPI)
-    
-    Returns:
-        Token containing access_token and token_type
-    
-    Raises:
-        HTTPException 401: If credentials invalid
     """
-    # Authenticate user and get token
-    access_token = await auth_service.authenticate_user(user_login)
+    # Authenticate user and get token + user model
+    auth_result = await auth_service.authenticate_user(user_login)
     
-    if not access_token:
+    if not auth_result:
         # Generic error for security (don't reveal which credential was wrong)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -255,7 +244,18 @@ async def login(user_login: UserLogin) -> Token:
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    return Token(access_token=access_token)
+    access_token, user = auth_result
+    user_response = UserResponse(
+        id=str(user.id) if user.id else None,
+        email=user.email,
+        full_name=user.full_name,
+        bio=user.bio,
+        role=user.role,
+        documents_limit=user.documents_limit,
+        is_active=user.is_active,
+        created_at=user.created_at,
+    )
+    return Token(access_token=access_token, user=user_response)
 
 
 @router.get("/me", response_model=UserResponse)

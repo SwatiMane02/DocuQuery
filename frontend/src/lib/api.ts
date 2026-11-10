@@ -20,9 +20,13 @@ export const API_BASE_URL = rawApiUrl
 
 let isHandling401 = false;
 
+export interface ApiClientOptions extends RequestInit {
+  timeoutMs?: number;
+}
+
 export async function apiClient<T>(
   endpoint: string,
-  options: RequestInit = {},
+  options: ApiClientOptions = {},
 ): Promise<T> {
   const cleanEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
   const url = endpoint.startsWith("http")
@@ -39,16 +43,44 @@ export async function apiClient<T>(
     headers.set("Authorization", `Bearer ${token}`);
   }
 
+  // Use a 90-second timeout to accommodate Render free-tier cold starts
+  const timeoutMs = options.timeoutMs ?? 90_000;
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  let signal = options.signal;
+
+  if (!signal) {
+    const controller = new AbortController();
+    signal = controller.signal;
+    timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  }
+
   let response: Response;
   try {
     response = await fetch(url, {
       ...options,
       headers,
+      signal,
     });
   } catch (err: unknown) {
-    const errorMsg =
-      err instanceof Error ? err.message : "Network connection failed";
-    throw new Error(`Unable to reach server (${errorMsg}). Please check your connection.`);
+    if (err instanceof Error) {
+      if (err.name === "AbortError") {
+        throw new Error(
+          "Request timed out waiting for the server. The backend may still be starting up—please retry."
+        );
+      }
+      const msg = err.message || "";
+      if (msg.includes("Failed to fetch") || msg.includes("NetworkError") || msg.includes("Load failed")) {
+        throw new Error(
+          "Unable to reach the server. The backend may be starting up or temporarily unreachable. Please retry."
+        );
+      }
+      throw new Error(`Connection error (${msg}). Please check your connection and retry.`);
+    }
+    throw new Error("Unable to reach the server. Please check your connection and retry.");
+  } finally {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
   }
 
   if (response.status === 401) {
@@ -64,6 +96,11 @@ export async function apiClient<T>(
   }
 
   if (!response.ok) {
+    if (response.status === 502 || response.status === 503 || response.status === 504) {
+      throw new Error(
+        `The server is currently waking up or temporarily unavailable (HTTP ${response.status}). Please retry in a few moments.`
+      );
+    }
     let errorMessage = "An unexpected error occurred";
     try {
       const errorData = await response.json();

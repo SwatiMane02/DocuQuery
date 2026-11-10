@@ -25,17 +25,12 @@ function AppInitializer() {
       const token = authStore.getToken();
       if (token) {
         try {
-          // Validate existing token with the backend, bounded by a 3.5s timeout
-          const profile = await Promise.race([
-            AuthService.getProfile(),
-            new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error("Session check timed out")), 3500)
-            ),
-          ]);
+          // Authoritative session verification against backend /auth/me
+          const profile = await AuthService.getProfile();
           authStore.setUser(profile);
         } catch (err) {
-          console.warn("Startup session verification failed or timed out:", err);
-          authStore.logout(); // Clear invalid or expired token
+          console.warn("Startup session verification failed:", err);
+          authStore.logout(); // Clear invalid or expired session
         }
       }
       setIsInitializing(false);

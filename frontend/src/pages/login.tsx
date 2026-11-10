@@ -22,6 +22,7 @@ export function LoginPage() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isWakingUp, setIsWakingUp] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // Email regex validation
@@ -31,6 +32,9 @@ export function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isLoading) {
+      return; // Prevent duplicate form submissions
+    }
     setError(null);
 
     // Validate inputs
@@ -52,19 +56,26 @@ export function LoginPage() {
     }
 
     setIsLoading(true);
+    setIsWakingUp(false);
+    // After 3 seconds, inform the user that the free-tier backend may be waking up
+    const wakeTimer = setTimeout(() => {
+      setIsWakingUp(true);
+    }, 3000);
+
     try {
       const response = await AuthService.login(email, password);
       authStore.setToken(response.access_token);
 
-      // Fetch user profile immediately and save to store
-      const profile = await AuthService.getProfile();
-      authStore.setUser(profile);
+      // Hydrate profile directly from login response (no extra /auth/me network call)
+      if (response.user) {
+        authStore.setUser(response.user);
+      }
 
       toast.success("Successfully logged in!", {
         description: "Welcome back to DocuQuery.",
       });
 
-      // Navigate to destination
+      // Navigate to destination immediately
       await router.navigate({ to: redirectPath });
     } catch (err) {
       const errorObj = err as Error;
@@ -73,7 +84,9 @@ export function LoginPage() {
         description: errorObj.message || "Invalid credentials.",
       });
     } finally {
+      clearTimeout(wakeTimer);
       setIsLoading(false);
+      setIsWakingUp(false);
     }
   };
 
@@ -522,6 +535,30 @@ export function LoginPage() {
                 </>
               )}
             </button>
+
+            {/* Waking Up Notice for Free Tier Cold Starts */}
+            {isWakingUp && (
+              <div
+                style={{
+                  marginTop: "12px",
+                  borderRadius: "8px",
+                  backgroundColor: "rgba(232, 145, 60, 0.08)",
+                  border: "1px solid rgba(232, 145, 60, 0.3)",
+                  padding: "10px 14px",
+                  fontSize: "12px",
+                  color: "#E8913C",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: "8px",
+                  textAlign: "center",
+                  animation: "fadeIn 0.3s ease-in-out",
+                }}
+              >
+                <Loader2 size={14} className="animate-spin" color="#E8913C" />
+                <span>Connecting to server. The backend may be waking up...</span>
+              </div>
+            )}
           </form>
 
           {/* OR CONTINUE WITH DIVIDER */}

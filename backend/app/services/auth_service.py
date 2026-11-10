@@ -143,16 +143,16 @@ class AuthService:
         return user
     
     @staticmethod
-    async def authenticate_user(user_login: UserLogin) -> str | None:
+    async def authenticate_user(user_login: UserLogin) -> tuple[str, User] | None:
         """
-        Authenticate user and return JWT access token.
+        Authenticate user and return JWT access token and User object.
         
         Authentication Process:
         1. Normalize email (strip and lowercase)
         2. Find user by email in database (direct match with case-insensitive fallback)
         3. Verify password matches stored hash off the event loop
         4. Check account is active
-        5. Create and return JWT access token
+        5. Create and return JWT access token along with User model
         """
         start_time = time.perf_counter()
         clean_email = user_login.email.strip().lower()
@@ -214,7 +214,7 @@ class AuthService:
             "Authentication successful for %s (lookup: %.3fs, verify: %.3fs, total: %.3fs)",
             masked, lookup_duration, verify_duration, total_duration
         )
-        return access_token
+        return access_token, user
     
     @staticmethod
     async def get_user_by_email(email: str) -> User | None:

@@ -16,6 +16,7 @@ import {
 import { DocumentService, DocumentResponse } from "@/services/documentService";
 import { AuthService, UserResponse } from "@/services/authService";
 import { AnalyticsService, UserAnalyticsResponse } from "@/services/analyticsService";
+import { authStore } from "@/store/authStore";
 
 export const Route = createFileRoute("/_user/dashboard")({
   component: Dashboard,
@@ -61,7 +62,7 @@ export function Dashboard() {
   const navigate = useNavigate();
   const [documents, setDocuments] = useState<DocumentResponse[]>([]);
   const [analytics, setAnalytics] = useState<UserAnalyticsResponse | null>(null);
-  const [user, setUser] = useState<UserResponse | null>(null);
+  const [user, setUser] = useState<UserResponse | null>(() => authStore.getUser());
   const [isLoading, setIsLoading] = useState(true);
   const [timeFilter, setTimeFilter] = useState("Last 7 Days");
 
@@ -72,9 +73,15 @@ export function Dashboard() {
   const loadDashboardData = async () => {
     setIsLoading(true);
     try {
+      // Reuse authenticated user from authStore; avoid duplicate /auth/me network calls
+      const cachedUser = authStore.getUser();
+      const profilePromise = cachedUser
+        ? Promise.resolve(cachedUser)
+        : AuthService.getProfile();
+
       const [docRes, profileRes, analyticsRes] = await Promise.allSettled([
         DocumentService.listDocuments(0, 10),
-        AuthService.getProfile(),
+        profilePromise,
         AnalyticsService.getUserAnalytics(),
       ]);
 
@@ -83,6 +90,9 @@ export function Dashboard() {
       }
       if (profileRes.status === "fulfilled") {
         setUser(profileRes.value);
+        if (!cachedUser) {
+          authStore.setUser(profileRes.value);
+        }
       }
       if (analyticsRes.status === "fulfilled") {
         setAnalytics(analyticsRes.value);
